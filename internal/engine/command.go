@@ -69,6 +69,12 @@ func (e *Engine) Command(ctx context.Context, sessionID string, cmd model.Comman
 		return model.CommandResult{}, err
 	}
 
+	// The user acted on this session: it becomes the most recently active.
+	e.mu.Lock()
+	e.touchLocked(sessionID)
+	e.recomputeLocked()
+	e.mu.Unlock()
+
 	verify := e.opts.VerifyTimeout
 	if before.Origin == model.OriginRemote {
 		verify = e.opts.RemoteVerifyTimeout

@@ -179,8 +179,8 @@ func TestSelectionRules(t *testing.T) {
 		}
 		return s.ID
 	}
-	// All paused, local preferred, then most recently active (b added after a).
-	if got := sel(); got != "mpris:b" {
+	// All paused, no observed activity, same origin: ID decides.
+	if got := sel(); got != "mpris:a" {
 		t.Errorf("tie-break: %s", got)
 	}
 	// Playing beats everything.
@@ -188,15 +188,12 @@ func TestSelectionRules(t *testing.T) {
 	local.Set(s)
 	waitUntil(t, "a selected", func() bool { return sel() == "mpris:a" })
 
-	// Origin preference remote.
+	// Playback starting later on the phone takes over (most recent activity).
+	time.Sleep(2 * time.Millisecond)
 	r := remoteSession("jf:phone", "C", "Pixel", model.StatePlaying, model.CapPlay)
 	remote.Set(r)
+	waitUntil(t, "phone selected", func() bool { return sel() == "jf:phone" })
 	st := e.Settings()
-	st.PreferOrigin = PreferRemote
-	_ = e.SetSettings(st)
-	if got := sel(); got != "jf:phone" {
-		t.Errorf("prefer remote: %s", got)
-	}
 	// Preferred player wins among equally playing sessions.
 	st.PreferredPlayer = "mpris:a"
 	_ = e.SetSettings(st)
@@ -636,4 +633,41 @@ func TestProviderRestartRemovesSessionsAndRecovers(t *testing.T) {
 	if len(e.ProviderStatuses()) != 0 {
 		t.Error("provider still listed")
 	}
+}
+
+func TestPausingKeepsSelectionAndInitialSyncIsNotActivity(t *testing.T) {
+	e := newEngine(t, nil)
+	// Both found playing during the initial sync: no recency information,
+	// so the origin preference (local) decides.
+	local := addFake(t, e, "mpris", "mpris", model.OriginLocal,
+		pt.Session("mpris:a", model.OriginLocal, "A", model.StatePlaying, pt.AllCaps...))
+	addFake(t, e, "jellyfin:home", "jellyfin", model.OriginRemote,
+		remoteSession("jf:phone", "C", "Pixel", model.StatePlaying, pt.AllCaps...))
+	sel := func() string {
+		s, _ := e.Selected()
+		if s == nil {
+			return ""
+		}
+		return s.ID
+	}
+	if got := sel(); got != "mpris:a" {
+		t.Fatalf("initial: %s", got)
+	}
+	// Pausing the local player through mediasync keeps it selected even
+	// though the phone is still playing, so "toggle" resumes it.
+	res, err := e.Command(context.Background(), "", model.Command{Name: model.CmdPause})
+	if err != nil || res.SessionID != "mpris:a" {
+		t.Fatalf("pause: %+v %v", res, err)
+	}
+	if got := sel(); got != "mpris:a" {
+		t.Fatalf("after pause: %s", got)
+	}
+	res, err = e.Command(context.Background(), "", model.Command{Name: model.CmdPlayPause})
+	if err != nil || res.SessionID != "mpris:a" {
+		t.Fatalf("toggle went to %+v %v", res, err)
+	}
+	// Pausing in the player itself (not via mediasync) is activity too.
+	time.Sleep(2 * time.Millisecond)
+	local.Set(pt.Session("mpris:a", model.OriginLocal, "A", model.StatePaused, pt.AllCaps...))
+	waitUntil(t, "still selected", func() bool { return sel() == "mpris:a" })
 }

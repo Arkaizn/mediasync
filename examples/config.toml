@@ -1,0 +1,80 @@
+# mediasync configuration — ~/.config/mediasync/config.toml
+#
+# Every key is optional; the values below are the defaults unless noted.
+# This file never contains credentials: Jellyfin tokens are stored in the
+# Secret Service (or the file fallback) by `mediasyncctl jellyfin login`.
+# Unknown keys are rejected. Validate with `mediasyncd --check-config`.
+
+[general]
+log_level = "info"        # debug | info | warn | error
+log_format = "text"       # text | json
+
+[presentation]
+# combined    – local players and remote sessions together
+# local_only  – only players running in this Linux user session
+# remote_only – only remote sessions (e.g. Jellyfin clients on a phone)
+mode = "combined"
+# Player to prefer when it is playing. Matches the MPRIS bus name suffix
+# ("feishin" matches org.mpris.MediaPlayer2.feishin*), identity, desktop
+# entry, or a remote client/device name (case-insensitive).
+preferred_player = ""
+prefer_origin = "local"   # tie-breaker: local | remote | none
+show_view_only = true     # list remote sessions that cannot be controlled
+show_stale = true         # list stale and disconnected sessions
+
+[local]
+enabled = true            # MPRIS discovery on the session bus
+include = []              # if non-empty, only these players
+ignore = ["playerctld"]   # playerctld mirrors other players; ignore it
+position_resync = "5s"    # re-read position of playing players ("0s" = off)
+call_timeout = "3s"       # bound for every D-Bus call
+
+[remote]
+enabled = true            # set false for local-only operation
+
+[dedup]
+enabled = true
+# Same-host detection from the client address Jellyfin reports. Disable when
+# Jellyfin runs in Docker with the userland proxy (every client then appears
+# to connect from a local address).
+use_address = true
+
+# Declare that a local MPRIS player and a Jellyfin client are the same
+# software, so its Jellyfin session is folded into the local player when both
+# play the same track (useful if the client's device name differs from this
+# machine's hostname).
+# [[dedup.links]]
+# local_player = "feishin"
+# remote_client = "Feishin"
+
+[jellyfin]
+poll_interval = "2s"
+request_timeout = "10s"
+stale_after = "90s"                 # playing client without control channel, no report → stale
+stale_paused_after = "15m"          # same, for paused clients
+remove_disconnected_after = "5m"    # drop sessions after the server is unreachable this long
+
+# One block per server. Log in with: mediasyncctl jellyfin login home
+[[jellyfin.servers]]
+name = "home"
+url = "https://jellyfin.example.org"
+# ca_file = "/etc/ssl/private-ca.pem"   # extra CA for a private PKI (verification stays on)
+# all_users = false                     # include other users' sessions (admin accounts)
+# ignore_clients = ["Jellyfin Web"]
+# ignore_devices = []
+# enabled = true
+
+[credentials]
+# secret-service: GNOME Keyring, KWallet, KeePassXC, … (recommended)
+# file: ~/.local/state/mediasync/credentials.json, mode 0600, NOT encrypted
+store = "secret-service"
+# file_path = "/home/me/.local/state/mediasync/credentials.json"
+
+[ipc]
+# socket_path = "/run/user/1000/mediasync/mediasync.sock"   # default: $XDG_RUNTIME_DIR/mediasync/
+max_clients = 32
+
+[commands]
+timeout = "5s"                 # provider must accept a command within this time
+verify_timeout = "1.5s"        # wait to observe the effect (local players)
+remote_verify_timeout = "5s"   # wait to observe the effect (remote sessions)

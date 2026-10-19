@@ -168,14 +168,14 @@ func (c *Client) authHeader() string {
 // apiError builds a structured error from an HTTP failure. It only includes
 // the request path (never query strings or headers).
 func apiError(path string, status int, notFound model.ErrorCode) error {
-	switch {
-	case status == http.StatusUnauthorized:
+	switch status {
+	case http.StatusUnauthorized:
 		return model.Errorf(model.ErrAuthFailed, "Jellyfin rejected the credentials (HTTP 401 on %s)", path).WithData("http_status", status)
-	case status == http.StatusForbidden:
+	case http.StatusForbidden:
 		return model.Errorf(model.ErrAuthFailed, "Jellyfin denied access (HTTP 403 on %s)", path).WithData("http_status", status)
-	case status == http.StatusNotFound:
+	case http.StatusNotFound:
 		return model.Errorf(notFound, "not found (HTTP 404 on %s)", path).WithData("http_status", status)
-	case status == http.StatusBadRequest:
+	case http.StatusBadRequest:
 		return model.Errorf(model.ErrProviderError, "Jellyfin rejected the request (HTTP 400 on %s)", path).WithData("http_status", status)
 	default:
 		return model.Errorf(model.ErrProviderError, "Jellyfin returned HTTP %d on %s", status, path).WithData("http_status", status)

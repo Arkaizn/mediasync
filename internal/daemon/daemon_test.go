@@ -326,7 +326,12 @@ func TestEndToEndCombinedSessions(t *testing.T) {
 		return e.SessionID == phoneID && e.Session != nil && e.Session.Playback.State == model.StatePaused
 	})
 
-	// Default target is the selected (local) session.
+	// The phone was just controlled, so it is now the automatic selection.
+	if sel := call[map[string]any](t, c, "sessions.selected", nil); sel["session"].(map[string]any)["id"] != phoneID {
+		t.Errorf("selection after controlling the phone: %v", sel["session"].(map[string]any)["id"])
+	}
+	// Default target is the selected session: select the local player.
+	call[map[string]any](t, c, "sessions.select", map[string]any{"session_id": "mpris:Feishin"})
 	cmd = call[model.CommandResult](t, c, "player.command", map[string]any{"command": "next"})
 	if cmd.SessionID != "mpris:Feishin" || cmd.Outcome != model.OutcomeVerified {
 		t.Errorf("local next: %+v", cmd)

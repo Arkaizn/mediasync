@@ -153,13 +153,14 @@ func (f *File) Set(_ context.Context, a Attributes, label string, s redact.Secre
 	if err != nil {
 		return err
 	}
-	out := d.Entries[:0]
+	kept := make([]fileEntry, 0, len(d.Entries)+1)
 	for _, e := range d.Entries {
 		if !match(e, a) {
-			out = append(out, e)
+			kept = append(kept, e)
 		}
 	}
-	d.Entries = append(out, fileEntry{Kind: a.Kind, Instance: a.Instance, Server: a.Server, User: a.User, Label: label, Secret: s.Reveal()})
+	kept = append(kept, fileEntry{Kind: a.Kind, Instance: a.Instance, Server: a.Server, User: a.User, Label: label, Secret: s.Reveal()})
+	d.Entries = kept
 	return f.save(d)
 }
 

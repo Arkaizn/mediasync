@@ -237,7 +237,7 @@ func (s *Server) Serve() error {
 		if err := checkPeer(uc); err != nil {
 			s.rejected.Add(1)
 			s.log.Warn("rejected connection", "err", err)
-			uc.Close()
+			_ = uc.Close()
 			continue
 		}
 		s.mu.Lock()
@@ -245,8 +245,8 @@ func (s *Server) Serve() error {
 			s.mu.Unlock()
 			s.rejected.Add(1)
 			s.log.Warn("too many clients; rejecting connection", "max", s.maxClients)
-			writeLine(uc, Notification{JSONRPC: JSONRPCVersion, Method: "error", Params: map[string]any{"code": "too_many_clients"}})
-			uc.Close()
+			_ = writeLine(uc, Notification{JSONRPC: JSONRPCVersion, Method: "error", Params: map[string]any{"code": "too_many_clients"}})
+			_ = uc.Close()
 			continue
 		}
 		c := newConn(s, uc)
@@ -409,7 +409,7 @@ func (c *Conn) Close() {
 	c.onClose = nil
 	c.mu.Unlock()
 	c.cancel()
-	c.uc.Close()
+	_ = c.uc.Close()
 	for _, f := range fns {
 		f()
 	}

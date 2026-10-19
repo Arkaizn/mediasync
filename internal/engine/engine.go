@@ -64,8 +64,9 @@ func (o *Options) defaults() {
 type entry struct {
 	raw      model.Session // as last received from the provider (+UpdatedAt)
 	instance string
-	// activeAt is when the session last started playing (or was first seen);
-	// used for tie-breaking.
+	// activeAt is the time of the last observed user-relevant activity:
+	// starting to play, pausing, or a command routed through the engine.
+	// Zero if the session was never seen active (e.g. found paused).
 	activeAt time.Time
 	seq      uint64 // insertion order, final deterministic tie-breaker after ID
 }
@@ -73,9 +74,13 @@ type entry struct {
 type providerEntry struct {
 	p      provider.Provider
 	status model.ProviderStatus
-	cancel context.CancelFunc
-	done   chan struct{}
-	ids    map[string]bool
+	// syncedAt is when the provider last became running; zero while it is
+	// not. Sessions first seen before or shortly after this are treated as
+	// pre-existing rather than as new activity.
+	syncedAt time.Time
+	cancel   context.CancelFunc
+	done     chan struct{}
+	ids      map[string]bool
 }
 
 // Engine is the central session aggregator.
@@ -275,7 +280,14 @@ func (e *Engine) upsert(pe *providerEntry, s model.Session) {
 	if !exists {
 		e.seq++
 		s.UpdatedAt = now
-		e.sessions[s.ID] = &entry{raw: s, instance: pe.p.Instance(), activeAt: now, seq: e.seq}
+		ent := &entry{raw: s, instance: pe.p.Instance(), seq: e.seq}
+		// A session that appears playing while the provider is already in
+		// sync is new activity (e.g. playback just started on a phone);
+		// sessions found during the initial sync carry no recency information.
+		if s.Playback.State == model.StatePlaying && !pe.syncedAt.IsZero() && now.Sub(pe.syncedAt) > initialSyncGrace {
+			ent.activeAt = now
+		}
+		e.sessions[s.ID] = ent
 		pe.ids[s.ID] = true
 		e.recomputeLocked()
 		return
@@ -288,7 +300,7 @@ func (e *Engine) upsert(pe *providerEntry, s model.Session) {
 		e.syncViewSilentLocked(s.ID, old.raw)
 		return
 	}
-	if s.Playback.State == model.StatePlaying && old.raw.Playback.State != model.StatePlaying {
+	if isActivity(old.raw.Playback.State, s.Playback.State) {
 		old.activeAt = now
 	}
 	s.UpdatedAt = now
@@ -333,6 +345,12 @@ func (e *Engine) setStatus(pe *providerEntry, st model.ProviderStatus) {
 		st.LastError = pe.status.LastError
 	}
 	st.Sessions = len(pe.ids)
+	switch {
+	case st.State == model.ProviderRunning && pe.status.State != model.ProviderRunning:
+		pe.syncedAt = e.opts.Now()
+	case st.State != model.ProviderRunning:
+		pe.syncedAt = time.Time{}
+	}
 	if statusEqual(pe.status, st) {
 		pe.status = st
 		return
@@ -345,6 +363,24 @@ func statusEqual(a, b model.ProviderStatus) bool {
 	return a.State == b.State && a.Message == b.Message && a.Sessions == b.Sessions &&
 		((a.LastError == nil) == (b.LastError == nil)) &&
 		(a.LastError == nil || (a.LastError.Code == b.LastError.Code && a.LastError.Message == b.LastError.Message))
+}
+
+// initialSyncGrace is how long after a provider becomes running newly
+// appearing sessions are still treated as part of its initial sync.
+const initialSyncGrace = 3 * time.Second
+
+// isActivity reports whether a state transition counts as user activity:
+// starting playback, or pausing playback.
+func isActivity(from, to model.PlaybackState) bool {
+	return (to == model.StatePlaying && from != model.StatePlaying) ||
+		(from == model.StatePlaying && to == model.StatePaused)
+}
+
+// touchLocked records activity on a session (e.g. a routed command).
+func (e *Engine) touchLocked(id string) {
+	if ent, ok := e.sessions[id]; ok {
+		ent.activeAt = e.opts.Now()
+	}
 }
 
 // meaningfulChange reports whether b differs from a in a way consumers care
@@ -479,16 +515,21 @@ func statusRank(s model.ConnectionStatus) int {
 }
 
 // rankedLocked returns sessions in deterministic presentation order. When
-// includeHidden is false, hidden sessions are dropped.
+// includeHidden is false, hidden sessions are dropped. The first visible
+// session is the automatic selection.
 //
 // Order:
-//  1. playing before paused before stopped/unknown
-//  2. the preferred player first
-//  3. the preferred origin (local by default) first
-//  4. connected before stale before disconnected
-//  5. controllable before view-only
-//  6. most recently started playing (or appeared) first
-//  7. session ID ascending
+//  1. the preferred player, if it is playing
+//  2. sessions with observed activity before those without
+//  3. most recent activity first (started playing, paused, or controlled
+//     through mediasync) — so pausing the current player keeps it current,
+//     while a player that starts playing later takes over
+//  4. playing before paused before stopped/unknown
+//  5. the preferred player
+//  6. the preferred origin (local by default)
+//  7. connected before stale before disconnected
+//  8. controllable before view-only
+//  9. session ID ascending
 func (e *Engine) rankedLocked(all []*model.Session, includeHidden bool) []*model.Session {
 	out := make([]*model.Session, 0, len(all))
 	for _, s := range all {
@@ -518,15 +559,30 @@ func (e *Engine) rankedLocked(all []*model.Session, includeHidden bool) []*model
 		}
 		return 1
 	}
+	isPref := func(s *model.Session) bool { return pref != "" && s.Player.Matches(pref) }
+	activity := func(s *model.Session) time.Time {
+		if ent := e.sessions[s.ID]; ent != nil {
+			return ent.activeAt
+		}
+		return time.Time{}
+	}
 	sort.SliceStable(out, func(i, j int) bool {
 		a, b := out[i], out[j]
+		if x, y := b2i(isPref(a) && a.Playback.State == model.StatePlaying), b2i(isPref(b) && b.Playback.State == model.StatePlaying); x != y {
+			return x < y
+		}
+		ta, tb := activity(a), activity(b)
+		if x, y := b2i(!ta.IsZero()), b2i(!tb.IsZero()); x != y {
+			return x < y
+		}
+		if !ta.Equal(tb) {
+			return ta.After(tb)
+		}
 		if x, y := stateRank(a.Playback.State), stateRank(b.Playback.State); x != y {
 			return x < y
 		}
-		if pref != "" {
-			if x, y := b2i(a.Player.Matches(pref)), b2i(b.Player.Matches(pref)); x != y {
-				return x < y
-			}
+		if x, y := b2i(isPref(a)), b2i(isPref(b)); x != y {
+			return x < y
 		}
 		if x, y := originRank(a.Origin), originRank(b.Origin); x != y {
 			return x < y
@@ -536,10 +592,6 @@ func (e *Engine) rankedLocked(all []*model.Session, includeHidden bool) []*model
 		}
 		if x, y := b2i(a.Controllable), b2i(b.Controllable); x != y {
 			return x < y
-		}
-		ea, eb := e.sessions[a.ID], e.sessions[b.ID]
-		if ea != nil && eb != nil && !ea.activeAt.Equal(eb.activeAt) {
-			return ea.activeAt.After(eb.activeAt)
 		}
 		return a.ID < b.ID
 	})

@@ -314,7 +314,6 @@ type simClient struct {
 	deviceID string
 	client   string
 	device   string
-	auth     string
 	token    string
 	ws       *wsConn
 
