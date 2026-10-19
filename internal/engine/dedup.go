@@ -16,6 +16,10 @@ type HostInfo struct {
 	Hostname string
 	// Addresses are the IP addresses assigned to local interfaces.
 	Addresses []string
+	// IgnoreAddresses disables address-based same-host detection (for
+	// servers that see every client through one local address, e.g. behind
+	// Docker's userland proxy).
+	IgnoreAddresses bool
 }
 
 // DetectHost gathers hostname and interface addresses.
@@ -55,7 +59,7 @@ func (h HostInfo) isLocalAddress(addr string) bool {
 // remoteOnThisHost reports evidence that a remote-origin session is
 // actually a client running on this machine.
 func (h HostInfo) remoteOnThisHost(r *model.Session) bool {
-	if r.Player.Address != nil && h.isLocalAddress(*r.Player.Address) {
+	if !h.IgnoreAddresses && r.Player.Address != nil && h.isLocalAddress(*r.Player.Address) {
 		return true
 	}
 	if r.Player.Device != nil && h.Hostname != "" {

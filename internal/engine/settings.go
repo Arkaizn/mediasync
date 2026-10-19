@@ -109,6 +109,9 @@ func (f Filter) Validate() error {
 	return nil
 }
 
+// Matches reports whether the session passes the filter (ignoring hidden state).
+func (f Filter) Matches(s *model.Session) bool { return f.match(s) }
+
 func (f Filter) match(s *model.Session) bool {
 	if len(f.Providers) > 0 && !containsFold(f.Providers, s.Provider) && !containsFold(f.Providers, s.ProviderInstance) {
 		return false
