@@ -1,0 +1,39 @@
+version: "2"
+linters:
+  default: standard
+  enable:
+    - misspell
+    - unconvert
+    - gocritic
+  settings:
+    errcheck:
+      # Close/Remove failures in cleanup paths carry no actionable information.
+      exclude-functions:
+        - (io.Closer).Close
+        - (net.Conn).Close
+        - (*net.UnixConn).Close
+        - (*net.UnixListener).Close
+        - (*github.com/arkaizn/mediasync/internal/client.Client).Close
+        - (*bufio.Writer).Flush
+        - (*bufio.Writer).Write
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*os.File).Close
+        - (*github.com/godbus/dbus/v5.Conn).Close
+        - os.Remove
+        - os.RemoveAll
+    gocritic:
+      disabled-checks:
+        - ifElseChain
+        - singleCaseSwitch
+        - exitAfterDefer
+  exclusions:
+    rules:
+      - path: _test\.go
+        linters: [errcheck]
+      - path: internal/testutil/
+        linters: [errcheck]
+formatters:
+  enable:
+    - gofmt

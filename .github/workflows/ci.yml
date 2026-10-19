@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Install D-Bus and mpv (for MPRIS tests)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends dbus mpv mpv-mpris
+      - name: Lint
+        run: |
+          go vet ./...
+          go vet -tags integration ./test/...
+          test -z "$(gofmt -l .)"
+      - name: Unit and end-to-end tests
+        run: go test -race -count=1 ./...
+      - name: Start Jellyfin 12.2 test server
+        run: scripts/jellyfin-test-server.sh start > "$RUNNER_TEMP/jellyfin.env"
+      - name: Integration tests (real mpv and Jellyfin)
+        run: |
+          . "$RUNNER_TEMP/jellyfin.env"
+          go test -tags integration -count=1 -v ./test/integration/
+      - name: Stop Jellyfin
+        if: always()
+        run: scripts/jellyfin-test-server.sh stop || true
+
+  golangci:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.5.0
