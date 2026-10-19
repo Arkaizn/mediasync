@@ -29,6 +29,21 @@ wait_up() {
   die "Jellyfin did not start (docker logs $NAME)"
 }
 
+# api: curl that retries while the server is still starting. Jellyfin answers
+# /System/Info/Public before startup has finished and returns 503 for other
+# endpoints until then (seen on a freshly pulled image in CI).
+api() {
+  local out
+  for _ in $(seq 1 60); do
+    if out="$(curl -fsS "$@" 2>/dev/null)"; then
+      printf '%s' "$out"
+      return 0
+    fi
+    sleep 2
+  done
+  curl -fsS "$@"   # final attempt, showing the error
+}
+
 start() {
   command -v docker >/dev/null || die "docker is required"
   command -v curl >/dev/null || die "curl is required"
@@ -38,14 +53,14 @@ start() {
   wait_up
   PASSWORD="$(head -c 18 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 20)"
 
-  curl -fsS -X POST "$URL/Startup/Configuration" -H 'Content-Type: application/json' \
+  api -X POST "$URL/Startup/Configuration" -H 'Content-Type: application/json' \
     -d '{"UICulture":"en-US","MetadataCountryCode":"US","PreferredMetadataLanguage":"en"}' >/dev/null
-  curl -fsS "$URL/Startup/User" >/dev/null
-  curl -fsS -X POST "$URL/Startup/User" -H 'Content-Type: application/json' \
+  api "$URL/Startup/User" >/dev/null
+  api -X POST "$URL/Startup/User" -H 'Content-Type: application/json' \
     -d "{\"Name\":\"$USER_NAME\",\"Password\":\"$PASSWORD\"}" >/dev/null
-  curl -fsS -X POST "$URL/Startup/RemoteAccess" -H 'Content-Type: application/json' \
+  api -X POST "$URL/Startup/RemoteAccess" -H 'Content-Type: application/json' \
     -d '{"EnableRemoteAccess":true}' >/dev/null
-  curl -fsS -X POST "$URL/Startup/Complete" >/dev/null
+  api -X POST "$URL/Startup/Complete" >/dev/null
 
   # Generate a few tagged audio files with the ffmpeg bundled in the image.
   docker exec "$NAME" sh -c 'mkdir -p /media/music/ArtistA/AlbumX && cd /media/music/ArtistA/AlbumX &&
@@ -54,14 +69,14 @@ start() {
       -metadata album="Album X" -metadata album_artist="Artist A" -metadata track=$i 0$i.mp3; done'
 
   AUTH='MediaBrowser Client="mediasync-setup", Device="setup", DeviceId="mediasync-setup", Version="1"'
-  TOKEN="$(curl -fsS -X POST "$URL/Users/AuthenticateByName" -H "Authorization: $AUTH" \
+  TOKEN="$(api -X POST "$URL/Users/AuthenticateByName" -H "Authorization: $AUTH" \
     -H 'Content-Type: application/json' -d "{\"Username\":\"$USER_NAME\",\"Pw\":\"$PASSWORD\"}" |
     python3 -c 'import json,sys; print(json.load(sys.stdin)["AccessToken"])')"
   H="Authorization: MediaBrowser Token=\"$TOKEN\""
-  curl -fsS -X POST "$URL/Library/VirtualFolders?name=Music&collectionType=music&refreshLibrary=true" \
+  api -X POST "$URL/Library/VirtualFolders?name=Music&collectionType=music&refreshLibrary=true" \
     -H "$H" -H 'Content-Type: application/json' -d '{"LibraryOptions":{"PathInfos":[{"Path":"/media/music"}]}}' >/dev/null
   for _ in $(seq 1 30); do
-    n="$(curl -fsS "$URL/Items?recursive=true&includeItemTypes=Audio" -H "$H" |
+    n="$(api "$URL/Items?recursive=true&includeItemTypes=Audio" -H "$H" |
       python3 -c 'import json,sys; print(json.load(sys.stdin)["TotalRecordCount"])')"
     [ "$n" -ge 3 ] && break
     sleep 2

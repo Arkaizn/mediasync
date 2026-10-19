@@ -7,6 +7,9 @@ are versioned separately (see docs/API.md).
 
 ## [Unreleased]
 
+### Fixed
+- `scripts/jellyfin-test-server.sh` retries setup calls while Jellyfin is still starting (it answers `/System/Info/Public` before other endpoints stop returning 503), which broke CI on a freshly pulled image.
+
 ## [0.1.0] — 2026-10-19
 
 First release.
