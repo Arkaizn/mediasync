@@ -8,6 +8,7 @@ are versioned separately (see docs/API.md).
 ## [Unreleased]
 
 ### Fixed
+- Data race in the IPC server: a connection accepted while the server was closing could call `WaitGroup.Add` concurrently with `Wait` (found by the race detector in CI).
 - `scripts/jellyfin-test-server.sh` retries setup calls while Jellyfin is still starting (it answers `/System/Info/Public` before other endpoints stop returning 503), which broke CI on a freshly pulled image.
 
 ## [0.1.0] — 2026-10-19

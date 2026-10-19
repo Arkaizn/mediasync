@@ -241,6 +241,12 @@ func (s *Server) Serve() error {
 			continue
 		}
 		s.mu.Lock()
+		if s.closed {
+			// Close is (or was) waiting on s.wg; do not start new work.
+			s.mu.Unlock()
+			_ = uc.Close()
+			return nil
+		}
 		if len(s.conns) >= s.maxClients {
 			s.mu.Unlock()
 			s.rejected.Add(1)
@@ -251,9 +257,11 @@ func (s *Server) Serve() error {
 		}
 		c := newConn(s, uc)
 		s.conns[c] = struct{}{}
+		// Add under s.mu: Close sets s.closed under the same lock before it
+		// calls s.wg.Wait, so Add never races with Wait.
+		s.wg.Add(1)
 		s.mu.Unlock()
 		s.accepted.Add(1)
-		s.wg.Add(1)
 		go func() {
 			defer s.wg.Done()
 			c.serve()
