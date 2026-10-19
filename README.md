@@ -53,6 +53,12 @@ systemctl --user enable --now mediasyncd
 mediasyncctl status
 ```
 
+`mediasyncctl` is installed to `~/.local/bin`. If your shell says
+`command not found`, that directory is not in your `PATH`. Add
+`export PATH="$HOME/.local/bin:$PATH"` to `~/.zshrc` / `~/.bashrc`, or
+call `~/.local/bin/mediasyncctl` directly. The service itself is not
+affected because the unit uses the full path.
+
 `make install PREFIX=/usr/local` installs elsewhere. The unit file is
 generated from `contrib/systemd/mediasyncd.service.in`. The example config is
 copied to `~/.config/mediasync/config.toml` only if none exists yet.
