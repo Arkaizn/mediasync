@@ -86,6 +86,9 @@ type Player struct {
 	DesktopEntry *string `json:"desktop_entry"`
 	// BusName is the D-Bus well-known name (MPRIS only).
 	BusName *string `json:"bus_name"`
+	// Address is the network address the remote client connects from, as
+	// reported by the server (used for same-host detection).
+	Address *string `json:"address"`
 }
 
 // Server describes the media server a remote session belongs to.
@@ -176,6 +179,9 @@ type Session struct {
 	DuplicateOf *string `json:"duplicate_of,omitempty"`
 	// Linked lists sessions recognised as duplicates of this one.
 	Linked []string `json:"linked,omitempty"`
+	// Hidden is set when the session is excluded from default listings:
+	// "duplicate", "mode", "view_only" or "stale".
+	Hidden string `json:"hidden,omitempty"`
 	// Kind summarises origin, controllability and status:
 	// "local", "remote_controllable", "remote_view_only", "stale", "disconnected".
 	Kind SessionKind `json:"kind"`
