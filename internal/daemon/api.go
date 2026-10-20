@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sort"
 	"sync"
+	"time"
 
 	"github.com/arkaizn/mediasync/internal/config"
 	"github.com/arkaizn/mediasync/internal/engine"
@@ -30,6 +31,7 @@ func (s *Service) registerAPI() {
 	h("jellyfin.servers", s.apiJellyfinServers)
 	h("jellyfin.login", s.apiJellyfinLogin)
 	h("jellyfin.logout", s.apiJellyfinLogout)
+	h("jellyfin.check", s.apiJellyfinCheck)
 	h("service.reload", s.apiReload)
 }
 
@@ -321,6 +323,20 @@ func (s *Service) apiJellyfinLogout(ctx context.Context, _ *ipc.Conn, raw json.R
 		return nil, err
 	}
 	return prov.Logout(ctx)
+}
+
+func (s *Service) apiJellyfinCheck(ctx context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
+	var p serverParams
+	if err := ipc.DecodeParams(raw, &p); err != nil {
+		return nil, err
+	}
+	prov, err := s.jellyfinProvider(p.Server)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return prov.Check(ctx), nil
 }
 
 func (s *Service) apiReload(_ context.Context, _ *ipc.Conn, _ json.RawMessage) (any, error) {

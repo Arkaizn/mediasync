@@ -108,6 +108,7 @@ mediasyncctl settings set mode=remote_only   # or local_only / combined
 mediasyncctl settings set remote_enabled=false
 mediasyncctl watch                           # live view (add --json for NDJSON)
 mediasyncctl diag                            # diagnostics
+mediasyncctl jellyfin check                  # why is my phone view-only?
 ```
 
 ## Using the API

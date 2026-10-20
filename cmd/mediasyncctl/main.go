@@ -56,6 +56,7 @@ Jellyfin:
   jellyfin servers
   jellyfin login SERVER [--user NAME] [--password-stdin]
   jellyfin logout SERVER
+  jellyfin check [SERVER]      diagnose remote control (WebSocket path, per-app status)
 
 Other:
   call METHOD [JSON_PARAMS]    raw API call
@@ -678,6 +679,60 @@ func cmdJellyfin(g globals, args []string) error {
 			printJSON(res)
 		} else {
 			fmt.Printf("Logged in to %v (%v) as %v; token stored in %v.\n", res["server_name"], res["server_version"], res["user_name"], res["credential_backend"])
+		}
+		return nil
+	case "check":
+		server, _ := splitPositional(args[1:])
+		var res struct {
+			ServerURL     string `json:"server_url"`
+			ServerName    string `json:"server_name"`
+			ServerVersion string `json:"server_version"`
+			UserName      string `json:"user_name"`
+			WebSocket     struct {
+				OK         bool   `json:"ok"`
+				HTTPStatus int    `json:"http_status"`
+				Detail     string `json:"detail"`
+			} `json:"websocket"`
+			Clients []struct {
+				Client                string   `json:"client"`
+				Device                string   `json:"device"`
+				NowPlaying            *string  `json:"now_playing"`
+				SupportsRemoteControl bool     `json:"supports_remote_control"`
+				SupportedCommands     []string `json:"supported_commands"`
+				Explanation           string   `json:"explanation"`
+			} `json:"clients"`
+			Error *model.ErrorInfo `json:"error"`
+		}
+		if err := call(g, "jellyfin.check", map[string]any{"server": server}, &res); err != nil {
+			return err
+		}
+		if g.json {
+			printJSON(res)
+			return nil
+		}
+		fmt.Printf("Server:    %s (%s %s)\n", res.ServerURL, res.ServerName, res.ServerVersion)
+		if res.Error != nil {
+			fmt.Printf("Error:     %s (%s)\n", res.Error.Message, res.Error.Code)
+			return nil
+		}
+		fmt.Printf("User:      %s\n", res.UserName)
+		mark := "FAIL"
+		if res.WebSocket.OK {
+			mark = "OK"
+		}
+		fmt.Printf("WebSocket: %s — %s\n", mark, res.WebSocket.Detail)
+		if !res.WebSocket.OK {
+			fmt.Println("           Remote control needs WebSocket connections. If Jellyfin is behind a reverse proxy,")
+			fmt.Println("           enable WebSocket forwarding for the /socket path (see docs/JELLYFIN.md).")
+			fmt.Println("           Note: this tests the URL mediasync uses; your phone may use a different one.")
+		}
+		fmt.Printf("\nApps seen by the server (%d):\n", len(res.Clients))
+		for _, c := range res.Clients {
+			playing := "idle"
+			if c.NowPlaying != nil {
+				playing = "playing " + *c.NowPlaying
+			}
+			fmt.Printf("  %s on %s — %s\n    %s\n", c.Client, c.Device, playing, c.Explanation)
 		}
 		return nil
 	case "logout":

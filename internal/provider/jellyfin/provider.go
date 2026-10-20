@@ -860,3 +860,93 @@ func (p *Provider) Logout(ctx context.Context) (LogoutResult, error) {
 	p.signalReauth()
 	return res, nil
 }
+
+// ClientCheck describes what the server reports about one client session.
+type ClientCheck struct {
+	SessionID             string   `json:"session_id,omitempty"`
+	Client                string   `json:"client"`
+	Device                string   `json:"device"`
+	NowPlaying            *string  `json:"now_playing"`
+	SupportsRemoteControl bool     `json:"supports_remote_control"`
+	SupportsMediaControl  bool     `json:"supports_media_control"`
+	SupportedCommands     []string `json:"supported_commands"`
+	LastCheckIn           string   `json:"last_check_in,omitempty"`
+	// Explanation is a human readable verdict.
+	Explanation string `json:"explanation"`
+}
+
+// CheckResult is the outcome of Check.
+type CheckResult struct {
+	ServerURL     string           `json:"server_url"`
+	ServerName    string           `json:"server_name,omitempty"`
+	ServerVersion string           `json:"server_version,omitempty"`
+	UserName      string           `json:"user_name,omitempty"`
+	WebSocket     WebSocketCheck   `json:"websocket"`
+	Clients       []ClientCheck    `json:"clients"`
+	Error         *model.ErrorInfo `json:"error,omitempty"`
+}
+
+// Check diagnoses remote control: it tests the WebSocket path through the
+// configured URL and reports the server's view of every client session of
+// the logged-in user (including idle ones, which are normally hidden).
+func (p *Provider) Check(ctx context.Context) CheckResult {
+	res := CheckResult{ServerURL: p.client.BaseURL(), Clients: []ClientCheck{}}
+	fail := func(err error) CheckResult {
+		e := model.AsError(err)
+		res.Error = &model.ErrorInfo{Code: e.Code, Message: e.Message, At: p.now()}
+		return res
+	}
+	info, err := p.client.PublicInfo(ctx)
+	if err != nil {
+		return fail(err)
+	}
+	res.ServerName, res.ServerVersion = info.ServerName, info.Version
+	if !p.client.HasToken() {
+		if tok, err := p.cfg.Credentials.Get(ctx, p.credAttrs("")); err == nil {
+			p.client.SetToken(tok)
+		} else {
+			return fail(model.Errorf(model.ErrNotAuthenticated, "not logged in; run `mediasyncctl jellyfin login %s`", p.cfg.Name))
+		}
+	}
+	user, err := p.client.Me(ctx)
+	if err != nil {
+		return fail(err)
+	}
+	res.UserName = user.Name
+	res.WebSocket = p.client.CheckWebSocket(ctx)
+	sessions, err := p.client.Sessions(ctx)
+	if err != nil {
+		return fail(err)
+	}
+	for _, si := range sessions {
+		if si.DeviceID == p.cfg.DeviceID || (!p.cfg.AllUsers && si.UserID != "" && !strings.EqualFold(si.UserID, user.ID)) {
+			continue
+		}
+		cc := ClientCheck{
+			SessionID: si.ID, Client: si.Client, Device: si.DeviceName,
+			SupportsRemoteControl: si.SupportsRemoteControl, SupportsMediaControl: si.SupportsMediaControl,
+			SupportedCommands: si.SupportedCommands,
+		}
+		if cc.SupportedCommands == nil {
+			cc.SupportedCommands = []string{}
+		}
+		if si.NowPlayingItem != nil {
+			cc.NowPlaying = model.StrPtr(si.NowPlayingItem.Name)
+		}
+		if si.LastPlaybackCheckIn.Year() >= 2000 {
+			cc.LastCheckIn = si.LastPlaybackCheckIn.UTC().Format(time.RFC3339)
+		}
+		switch {
+		case si.SupportsRemoteControl:
+			cc.Explanation = "controllable: the app holds a live control connection to the server"
+		case len(si.SupportedCommands) > 0:
+			cc.Explanation = "view-only: the app announced remote-control support but has no live control (WebSocket) " +
+				"connection; check the WebSocket result above, or the app was suspended in the background"
+		default:
+			cc.Explanation = "view-only: the app did not announce remote-control support (setting disabled, " +
+				"app does not support it, or it has not connected its control channel yet)"
+		}
+		res.Clients = append(res.Clients, cc)
+	}
+	return res
+}

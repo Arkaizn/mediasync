@@ -81,7 +81,12 @@ type Server struct {
 	down bool
 	// Fail500 makes /Sessions return 500.
 	fail500 bool
+	// noWebSocket simulates a reverse proxy that does not forward upgrades.
+	noWebSocket bool
 }
+
+// SetNoWebSocket makes /socket behave like a proxy without WebSocket support.
+func (s *Server) SetNoWebSocket(v bool) { s.mu.Lock(); s.noWebSocket = v; s.mu.Unlock() }
 
 // New starts a fake server with one user.
 func New(user, password string) *Server {
@@ -300,6 +305,26 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, s.sessionsJSON())
+	case path == "/socket" && r.Method == http.MethodGet:
+		s.mu.Lock()
+		broken := s.noWebSocket
+		s.mu.Unlock()
+		if broken || !strings.EqualFold(r.Header.Get("Upgrade"), "websocket") {
+			http.NotFound(w, r) // what a proxy that drops Upgrade headers produces
+			return
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		conn, buf, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		_, _ = buf.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
+		_ = buf.Flush()
+		_ = conn.Close()
 	case strings.HasPrefix(path, "/Sessions/") && r.Method == http.MethodPost:
 		s.command(w, r, strings.TrimPrefix(path, "/Sessions/"))
 	default:
@@ -397,8 +422,10 @@ func (s *Server) sessionsJSON() []map[string]any {
 	out := []map[string]any{}
 	for _, c := range s.clients {
 		s.syncPos(c)
+		// Like the real server, announced commands are listed even when the
+		// client has no control connection (SupportsRemoteControl false).
 		cmds := c.SupportedCommands
-		if cmds == nil || !c.Controllable {
+		if cmds == nil {
 			cmds = []string{}
 		}
 		sess := map[string]any{

@@ -311,6 +311,24 @@ Params: `{"server": "home"}`. Revokes the token on the server (best effort),
 deletes it from the credential store and removes that server's sessions.
 → `{"revoked": true, "credential_deleted": true, "detail": "…"}`
 
+### `jellyfin.check`
+Params: `{"server": "home"}`. Diagnoses remote control: tests a WebSocket
+handshake through the configured URL (a reverse proxy without WebSocket
+forwarding makes every client view-only) and lists all sessions of the
+logged-in user as the server reports them, including idle ones.
+→
+```json
+{"server_url": "…", "server_name": "…", "server_version": "12.2.0", "user_name": "alice",
+ "websocket": {"ok": false, "http_status": 404, "detail": "…"},
+ "clients": [{"client": "Finamp", "device": "iPhone", "now_playing": "Track 1",
+              "supports_remote_control": false, "supports_media_control": false,
+              "supported_commands": ["SetVolume", …], "last_check_in": "…",
+              "explanation": "view-only: …"}],
+ "error": null}
+```
+Failures that prevent the check (server unreachable, not logged in) are
+reported in `error`, not as a JSON-RPC error.
+
 ### `service.reload`
 Re-reads the configuration file. If it is invalid, the running
 configuration is kept and `invalid_config` is returned. Socket and

@@ -516,3 +516,48 @@ func TestPasswordNotRetained(t *testing.T) {
 	}
 	_ = redact.Secret("")
 }
+
+func TestCheckDiagnosesRemoteControl(t *testing.T) {
+	e := newEnv(t, nil)
+	phone(e.srv)
+	// Finamp announced remote control but its WebSocket never got through.
+	e.srv.AddClient(&fakejellyfin.Client{
+		UserID: e.srv.UserID("alice"), Client: "Finamp", DeviceName: "iPhone", DeviceID: "iphone-1",
+		SupportedCommands: []string{"SetVolume", "PlayState"},
+		ItemID:            "x", Title: "Song", RunTimeTicks: 1_000_000_000,
+	})
+	ctx := context.Background()
+	if res := e.prov.Check(ctx); res.Error == nil || res.Error.Code != model.ErrNotAuthenticated {
+		t.Fatalf("check before login: %+v", res)
+	}
+	e.login(t)
+
+	res := e.prov.Check(ctx)
+	if res.Error != nil || !res.WebSocket.OK || res.WebSocket.HTTPStatus != 101 || res.ServerVersion != "12.2.0" || res.UserName != "alice" {
+		t.Fatalf("check: %+v", res)
+	}
+	byDevice := map[string]ClientCheck{}
+	for _, c := range res.Clients {
+		byDevice[c.Device] = c
+	}
+	if c := byDevice["Pixel 7"]; !c.SupportsRemoteControl || !strings.HasPrefix(c.Explanation, "controllable") {
+		t.Errorf("phone: %+v", c)
+	}
+	if c := byDevice["iPhone"]; c.SupportsRemoteControl || !strings.Contains(c.Explanation, "no live control") {
+		t.Errorf("iphone: %+v", c)
+	}
+
+	// A proxy that does not forward WebSocket upgrades is detected.
+	e.srv.SetNoWebSocket(true)
+	res = e.prov.Check(ctx)
+	if res.WebSocket.OK || res.WebSocket.HTTPStatus != 404 || !strings.Contains(res.WebSocket.Detail, "reverse proxy") {
+		t.Errorf("broken proxy: %+v", res.WebSocket)
+	}
+	// The token must not appear in the socket URL.
+	tok, _ := e.creds.Get(ctx, e.prov.credAttrs(""))
+	for _, r := range e.srv.Requests() {
+		if strings.Contains(r, tok.Reveal()) {
+			t.Fatalf("token in URL: %s", r)
+		}
+	}
+}
