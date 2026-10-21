@@ -111,6 +111,12 @@ func socketPath() string {
 
 func fail(err error) {
 	var ce *client.Error
+	if errors.As(err, &ce) && ce.RPCCode == -32601 {
+		fmt.Fprintf(os.Stderr, "mediasyncctl: %s\n", ce.Message)
+		fmt.Fprintln(os.Stderr, "The running mediasyncd is older than this mediasyncctl. Restart it after updating:")
+		fmt.Fprintln(os.Stderr, "  systemctl --user restart mediasyncd")
+		os.Exit(1)
+	}
 	if errors.As(err, &ce) {
 		fmt.Fprintf(os.Stderr, "mediasyncctl: %s (%s)\n", ce.Message, ce.Code)
 		os.Exit(1)
