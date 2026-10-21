@@ -561,3 +561,34 @@ func TestCheckDiagnosesRemoteControl(t *testing.T) {
 		}
 	}
 }
+
+func TestCheckDetectsSplitSession(t *testing.T) {
+	e := newEnv(t, nil)
+	alice := e.srv.UserID("alice")
+	// Playing session that announced Play On but has no control connection…
+	e.srv.AddClient(&fakejellyfin.Client{
+		UserID: alice, Client: "Finamp", DeviceName: "iPhone", DeviceID: "new-id",
+		SupportedCommands: []string{"SetVolume", "PlayState"}, ItemID: "x", Title: "Song", RunTimeTicks: 1_000_000_000,
+	})
+	// …and the idle session its control connection was attached to.
+	e.srv.AddClient(&fakejellyfin.Client{UserID: alice, Client: "Finamp", DeviceName: "iPhone", DeviceID: "old-id"})
+	// An unrelated view-only browser must not get the hint.
+	e.srv.AddClient(&fakejellyfin.Client{
+		UserID: alice, Client: "Jellyfin Web", DeviceName: "Firefox", DeviceID: "web",
+		SupportedCommands: []string{"SetVolume"}, ItemID: "y", Title: "Other", RunTimeTicks: 1_000_000_000,
+	})
+	e.login(t)
+	res := e.prov.Check(context.Background())
+	hinted := 0
+	for _, c := range res.Clients {
+		if strings.Contains(c.Explanation, "log out of the app and log in again") {
+			hinted++
+			if c.Client != "Finamp" || c.NowPlaying == nil {
+				t.Errorf("wrong session hinted: %+v", c)
+			}
+		}
+	}
+	if hinted != 1 {
+		t.Errorf("want exactly one split-session hint, got %d: %+v", hinted, res.Clients)
+	}
+}

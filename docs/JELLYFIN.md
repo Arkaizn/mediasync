@@ -141,6 +141,12 @@ Fix the proxy for the `/socket` path:
 **WebSocket OK but the app is still view-only:**
 - The phone may use a different URL than mediasync, e.g. a public domain
   through the proxy vs. a LAN IP. The check only tests mediasync's URL.
+- **The app appears twice** (same app and device name, one playing, one
+  idle): its saved login token belongs to a different device ID than the
+  app now uses (after a reinstall, update or backup restore). Verified on
+  Jellyfin 12.2: the control WebSocket authenticates with the token and is
+  attached to the token's device, so neither session is controllable. **Log
+  out of the app and log in again.** `jellyfin check` points this out.
 - The app's remote-control setting is off. In Finamp it is *Settings →
   Playback Reporting → Enable 'Play On' Support*. Finamp gives up
   reconnecting after a few minutes of failures. Close and reopen the app
