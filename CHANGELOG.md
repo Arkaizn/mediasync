@@ -9,6 +9,7 @@ are versioned separately (see docs/API.md).
 
 ### Added
 - systemd `Type=notify`: `systemctl restart` waits until the socket is ready; `mediasyncctl` also waits briefly for a starting service.
+- `jellyfin check` detects an app whose saved login belongs to another device ID (it then appears twice and is never controllable).
 - `mediasyncctl jellyfin check` / `jellyfin.check`: diagnoses why a remote app
   is view-only. It tests WebSocket forwarding through the server URL and shows
   the server's view of each app. Troubleshooting guide in docs/JELLYFIN.md.
