@@ -3,8 +3,10 @@ package jellyfin
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -411,4 +413,62 @@ func (c *Client) ImageURL(itemID, tag string) string {
 	}
 	u.RawQuery = q.Encode()
 	return u.String()
+}
+
+// WebSocketCheck is the result of a WebSocket handshake test.
+type WebSocketCheck struct {
+	OK bool `json:"ok"`
+	// HTTPStatus is the handshake response status (101 on success).
+	HTTPStatus int    `json:"http_status,omitempty"`
+	Detail     string `json:"detail,omitempty"`
+}
+
+// CheckWebSocket performs a WebSocket handshake against /socket through the
+// configured server URL, the same way remote-controllable clients connect.
+// Remote control only works if this succeeds for the URL the phone uses; a
+// reverse proxy that does not forward WebSocket upgrades breaks it.
+func (c *Client) CheckWebSocket(ctx context.Context) WebSocketCheck {
+	hc := *c.http
+	// WebSocket upgrades need HTTP/1.1.
+	if tr, ok := c.http.Transport.(*http.Transport); ok {
+		t := tr.Clone()
+		t.ForceAttemptHTTP2 = false
+		t.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+		hc.Transport = t
+	} else if c.http.Transport == nil {
+		t := http.DefaultTransport.(*http.Transport).Clone()
+		t.ForceAttemptHTTP2 = false
+		t.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+		hc.Transport = t
+	}
+	u := *c.base
+	u.Path = c.base.Path + "/socket"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return WebSocketCheck{Detail: "cannot build request"}
+	}
+	key := make([]byte, 16)
+	_, _ = rand.Read(key)
+	req.Header.Set("Authorization", c.authHeader())
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Version", "13")
+	req.Header.Set("Sec-WebSocket-Key", base64.StdEncoding.EncodeToString(key))
+	resp, err := hc.Do(req)
+	if err != nil {
+		return WebSocketCheck{Detail: model.AsError(transportError(err, "/socket")).Message}
+	}
+	defer resp.Body.Close()
+	res := WebSocketCheck{HTTPStatus: resp.StatusCode}
+	switch {
+	case resp.StatusCode == http.StatusSwitchingProtocols && strings.EqualFold(resp.Header.Get("Upgrade"), "websocket"):
+		res.OK = true
+		res.Detail = "WebSocket connections work through this URL"
+	case resp.StatusCode == http.StatusUnauthorized:
+		res.Detail = "the server rejected the credentials for the WebSocket"
+	default:
+		res.Detail = fmt.Sprintf("the WebSocket handshake failed (HTTP %d). A reverse proxy in front of Jellyfin "+
+			"probably does not forward WebSocket upgrades; remote control cannot work through this URL", resp.StatusCode)
+	}
+	return res
 }

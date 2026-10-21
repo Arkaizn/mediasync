@@ -44,6 +44,10 @@ install: build
 		install -m 0600 examples/config.toml "$(CONFIGDIR)/config.toml" && \
 		echo "installed example configuration to $(CONFIGDIR)/config.toml"; \
 	fi
+	@case ":$$PATH:" in *":$(BINDIR):"*) ;; *) \
+		echo "NOTE: $(BINDIR) is not in your PATH, so 'mediasyncctl' will not be found."; \
+		echo "      Add it, e.g. for zsh/bash: echo 'export PATH=\"$(BINDIR):\$$PATH\"' >> ~/.zshrc";; \
+	esac
 	@echo "Now run: systemctl --user daemon-reload && systemctl --user enable --now mediasyncd"
 
 uninstall:

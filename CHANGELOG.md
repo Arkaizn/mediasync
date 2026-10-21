@@ -7,6 +7,11 @@ are versioned separately (see docs/API.md).
 
 ## [Unreleased]
 
+### Added
+- `mediasyncctl jellyfin check` / `jellyfin.check`: diagnoses why a remote app
+  is view-only. It tests WebSocket forwarding through the server URL and shows
+  the server's view of each app. Troubleshooting guide in docs/JELLYFIN.md.
+
 ### Fixed
 - Data race in the IPC server: a connection accepted while the server was closing could call `WaitGroup.Add` concurrently with `Wait` (found by the race detector in CI).
 - `scripts/jellyfin-test-server.sh` retries setup calls while Jellyfin is still starting (it answers `/System/Info/Public` before other endpoints stop returning 503), which broke CI on a freshly pulled image.

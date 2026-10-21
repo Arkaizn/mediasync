@@ -99,6 +99,55 @@ posts capabilities, opens the WebSocket, applies commands and reports its
 state, as real players do). Real phone apps were not part of the automated
 tests.
 
+## Troubleshooting: "my phone shows as view-only"
+
+Run on the computer while music plays on the phone:
+
+```sh
+mediasyncctl jellyfin check            # or: mediasyncctl jellyfin check SERVER
+```
+
+It tests a WebSocket handshake through the configured server URL and lists
+what the server knows about every app of your user:
+
+```
+WebSocket: FAIL — the WebSocket handshake failed (HTTP 404). A reverse proxy in front of Jellyfin
+           probably does not forward WebSocket upgrades; remote control cannot work through this URL
+Apps seen by the server (1):
+  Finamp on iPhone — playing Track 1
+    view-only: the app announced remote-control support but has no live control (WebSocket) connection …
+```
+
+**WebSocket FAIL** → the reverse proxy in front of Jellyfin drops WebSocket
+upgrades. Apps still play music and report what they play (plain HTTP), but
+the server can never push commands to them. This was reproduced with nginx
+in front of Jellyfin 12.2: Finamp with *Play On* enabled stayed view-only.
+Fix the proxy for the `/socket` path:
+
+- **nginx:**
+  ```nginx
+  map $http_upgrade $connection_upgrade { default upgrade; '' close; }
+  # inside the location that proxies Jellyfin:
+  proxy_http_version 1.1;
+  proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection $connection_upgrade;
+  ```
+- **Nginx Proxy Manager:** enable *Websockets Support* on the proxy host.
+- **Apache:** `RewriteEngine on`, `RewriteCond %{HTTP:Upgrade} websocket [NC]`,
+  `RewriteRule /(.*) ws://JELLYFIN:8096/$1 [P,L]` (with `mod_proxy_wstunnel`).
+- **Caddy, Traefik, Cloudflare Tunnel:** forward WebSockets by default. Check
+  for extra middlewares or rules that block `/socket`.
+
+**WebSocket OK but the app is still view-only:**
+- The phone may use a different URL than mediasync, e.g. a public domain
+  through the proxy vs. a LAN IP. The check only tests mediasync's URL.
+- The app's remote-control setting is off. In Finamp it is *Settings →
+  Playback Reporting → Enable 'Play On' Support*. Finamp gives up
+  reconnecting after a few minutes of failures. Close and reopen the app
+  after fixing the proxy.
+- The phone suspended the app: iOS while paused, or Android battery
+  optimisation.
+
 ## Untested / out of scope
 
 - Jellyfin versions older than 12 were not tested. 10.10.7 was probed
