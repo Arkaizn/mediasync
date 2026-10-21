@@ -134,7 +134,8 @@ func dial(g globals) *client.Client {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		c, err = client.Dial(ctx, g.socket)
 		cancel()
-		if err == nil || time.Now().After(deadline) || !(errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED)) {
+		starting := errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED)
+		if err == nil || !starting || time.Now().After(deadline) {
 			break
 		}
 		time.Sleep(150 * time.Millisecond)
