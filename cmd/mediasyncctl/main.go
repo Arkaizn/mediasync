@@ -126,9 +126,19 @@ func fail(err error) {
 }
 
 func dial(g globals) *client.Client {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	c, err := client.Dial(ctx, g.socket)
+	// Retry briefly: the service may be starting (e.g. right after a restart).
+	var c *client.Client
+	var err error
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		c, err = client.Dial(ctx, g.socket)
+		cancel()
+		if err == nil || time.Now().After(deadline) || !(errors.Is(err, syscall.ENOENT) || errors.Is(err, syscall.ECONNREFUSED)) {
+			break
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
 	if err != nil {
 		fail(fmt.Errorf("cannot connect to mediasyncd at %s: %w (is the service running?)", g.socket, err))
 	}

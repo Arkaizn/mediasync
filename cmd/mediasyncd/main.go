@@ -71,6 +71,9 @@ func run() int {
 		log.Error("cannot start", "err", err)
 		return 1
 	}
+	// The socket is listening: tell systemd we are ready (Type=notify), so
+	// `systemctl restart` only returns once clients can connect.
+	sdNotify("READY=1")
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -78,13 +81,17 @@ func run() int {
 	signal.Notify(hup, syscall.SIGHUP)
 	go func() {
 		for range hup {
-			if err := svc.Reload(); err != nil {
+			sdNotify("RELOADING=1")
+			err := svc.Reload()
+			sdNotify("READY=1")
+			if err != nil {
 				log.Error("reload failed; keeping previous configuration", "err", err)
 			}
 		}
 	}()
 
 	svc.Run(ctx)
+	sdNotify("STOPPING=1")
 	svc.Close()
 	return 0
 }
