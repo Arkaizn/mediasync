@@ -42,6 +42,14 @@ Playback (default target: the selected session):
   play | pause | toggle | stop | next | previous [--session ID]
   seek POSITION [--session ID] POSITION: 90, 1:30, 90s, +10s, -5s
   volume LEVEL [--session ID]  LEVEL: 0-100 (percent) or 0.0-1.0
+  jump INDEX [--session ID]    play queue item INDEX (see "queue")
+  play-items ID... [--mode now|next|last] [--session ID]
+                               play tracks, albums or playlists by id
+
+Media:
+  queue [--session ID]         show the queue
+  lyrics [--session ID]        show lyrics of the current track
+  playlists [SERVER]           list Jellyfin playlists
 
 Configuration:
   settings                     show settings
@@ -246,6 +254,117 @@ func runCommand(g globals, cmd string, args []string) error {
 		return sendCommand(g, map[string]any{"session_id": *session, "command": model.CmdSetVolume, "volume": v})
 	case "watch":
 		return cmdWatch(g)
+	case "jump":
+		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
+		session := fs.String("session", "", "target session id")
+		pos, rest := splitPositional(args)
+		_ = fs.Parse(rest)
+		idx, err := strconv.Atoi(pos)
+		if err != nil || idx < 0 {
+			return errors.New("usage: jump INDEX [--session ID]")
+		}
+		return sendCommand(g, map[string]any{"session_id": *session, "command": model.CmdQueueJump, "index": idx})
+	case "play-items":
+		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
+		session := fs.String("session", "", "target session id")
+		mode := fs.String("mode", "now", "now, next or last")
+		var ids []string
+		var rest []string
+		for i := 0; i < len(args); i++ {
+			if strings.HasPrefix(args[i], "--") {
+				rest = append(rest, args[i])
+				if !strings.Contains(args[i], "=") && i+1 < len(args) {
+					rest = append(rest, args[i+1])
+					i++
+				}
+				continue
+			}
+			ids = append(ids, args[i])
+		}
+		_ = fs.Parse(rest)
+		if len(ids) == 0 {
+			return errors.New("usage: play-items ID... [--mode now|next|last] [--session ID]")
+		}
+		return sendCommand(g, map[string]any{"session_id": *session, "command": model.CmdPlayItems, "item_ids": ids, "mode": *mode})
+	case "queue":
+		id, err := sessionOrSelected(g, args)
+		if err != nil {
+			return err
+		}
+		var q model.Queue
+		if err := call(g, "sessions.queue", map[string]any{"session_id": id}, &q); err != nil {
+			return err
+		}
+		if g.json {
+			printJSON(q)
+			return nil
+		}
+		if !q.Available {
+			fmt.Println("no queue available for", id)
+			return nil
+		}
+		for _, it := range q.Items {
+			mark := " "
+			if q.CurrentIndex != nil && *q.CurrentIndex == it.Index {
+				mark = ">"
+			}
+			artist := "?"
+			if len(it.Artists) > 0 {
+				artist = strings.Join(it.Artists, ", ")
+			}
+			fmt.Printf("%s %3d  %s — %s [%s]\n", mark, it.Index, artist, str(it.Title, "?"), fmtMS(it.DurationMS))
+		}
+		return nil
+	case "lyrics":
+		id, err := sessionOrSelected(g, args)
+		if err != nil {
+			return err
+		}
+		var l model.Lyrics
+		if err := call(g, "lyrics.get", map[string]any{"session_id": id}, &l); err != nil {
+			return err
+		}
+		if g.json {
+			printJSON(l)
+			return nil
+		}
+		switch l.Status {
+		case model.LyricsNone:
+			fmt.Println("no lyrics for this track")
+			return nil
+		case model.LyricsUnavailable:
+			fmt.Println("lyrics unavailable")
+			return nil
+		}
+		for _, line := range l.Lines {
+			if line.StartMS != nil {
+				fmt.Printf("[%s] %s\n", fmtMS(line.StartMS), line.Text)
+			} else {
+				fmt.Println(line.Text)
+			}
+		}
+		fmt.Printf("(source: %s, synced: %v)\n", str(l.Source, "?"), l.Synced)
+		return nil
+	case "playlists":
+		server, _ := splitPositional(args)
+		var res struct {
+			Playlists []model.Playlist `json:"playlists"`
+		}
+		if err := call(g, "library.playlists", map[string]any{"server": server}, &res); err != nil {
+			return err
+		}
+		if g.json {
+			printJSON(res)
+			return nil
+		}
+		for _, p := range res.Playlists {
+			n := "?"
+			if p.ItemCount != nil {
+				n = strconv.Itoa(*p.ItemCount)
+			}
+			fmt.Printf("%s  %s (%s items)\n", p.ID, p.Name, n)
+		}
+		return nil
 	case "providers":
 		var res struct {
 			Providers []model.ProviderStatus `json:"providers"`
@@ -787,4 +906,24 @@ func readPassword(prompt string) (string, error) {
 		return "", err
 	}
 	return strings.TrimRight(line, "\r\n"), nil
+}
+
+// sessionOrSelected returns --session, or the selected session's id.
+func sessionOrSelected(g globals, args []string) (string, error) {
+	fs := flag.NewFlagSet("session", flag.ExitOnError)
+	session := fs.String("session", "", "session id")
+	_ = fs.Parse(args)
+	if *session != "" {
+		return *session, nil
+	}
+	var sel struct {
+		Session *model.Session `json:"session"`
+	}
+	if err := call(g, "sessions.selected", nil, &sel); err != nil {
+		return "", err
+	}
+	if sel.Session == nil {
+		return "", errors.New("no session selected; pass --session ID")
+	}
+	return sel.Session.ID, nil
 }

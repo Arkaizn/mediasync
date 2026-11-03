@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -701,4 +702,140 @@ func TestCredentialStoreUnavailable(t *testing.T) {
 		t.Errorf("credentials file: %v", err)
 	}
 	_ = dbus.ObjectPath("")
+}
+
+func TestEndToEndQueueLyricsPlaylists(t *testing.T) {
+	h := newHarness(t, true, nil)
+	h.jf.SetStoreQueue(true) // Jellyfin 10.10 behaviour: the queue is exposed
+	ids := []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3"}
+	start := int64(10_000_000)
+	for i, id := range ids {
+		it := fakejellyfin.Item{ID: id, Name: fmt.Sprintf("Track %d", i+1), Type: "Audio", Album: "Album X", Artists: []string{"Artist A"}, RunTimeTicks: 1_800_000_000}
+		if i == 0 {
+			it.Lyrics = []fakejellyfin.LyricLine{{Text: "Hello", StartTicks: &start}}
+		}
+		h.jf.AddItem(it)
+	}
+	h.jf.AddItem(fakejellyfin.Item{ID: "plist000000000000000000000000001", Name: "Road Trip", Type: "Playlist", Children: []string{ids[2], ids[0]}})
+	phone := h.jf.AddClient(&fakejellyfin.Client{
+		UserID: h.jf.UserID("alice"), UserName: "alice", Client: "Finamp", DeviceName: "iPhone", DeviceID: "iphone-1",
+		Controllable: true, ApplyCommands: true, ItemID: ids[0], Title: "Track 1", Artists: []string{"Artist A"}, RunTimeTicks: 1_800_000_000,
+		Queue: []fakejellyfin.QueueEntry{{ID: ids[1], PlaylistItemID: "nextUp"}, {ID: ids[2], PlaylistItemID: "queue"}},
+	})
+	// Local player that publishes its own lyrics (as Feishin does).
+	opts := feishinOpts()
+	opts.Tracks[0].Lyrics = "[00:02.00]Local line"
+	h.player(opts)
+
+	c := h.client()
+	hello := call[map[string]any](t, c, "hello", nil)
+	methods := fmt.Sprint(hello["methods"])
+	for _, m := range []string{"sessions.queue", "lyrics.get", "library.playlists"} {
+		if !strings.Contains(methods, m) {
+			t.Errorf("hello.methods lacks %s: %s", m, methods)
+		}
+	}
+	call[map[string]any](t, c, "jellyfin.login", map[string]any{"server": "home", "username": "alice", "password": "correct horse battery staple"})
+	s := waitList(t, c, nil, "phone with queue", func(s snap) bool {
+		for _, x := range s.Sessions {
+			if x.Player.DeviceID != nil && *x.Player.DeviceID == "iphone-1" && x.Has(model.CapQueue) {
+				return true
+			}
+		}
+		return false
+	})
+	var ph model.Session
+	for _, x := range s.Sessions {
+		if x.Player.DeviceID != nil && *x.Player.DeviceID == "iphone-1" {
+			ph = x
+		}
+	}
+	for _, capab := range []model.Capability{model.CapQueue, model.CapQueueJump, model.CapPlayItems, model.CapLyrics} {
+		if !ph.Has(capab) {
+			t.Errorf("phone lacks %s: %v", capab, ph.Capabilities)
+		}
+	}
+
+	// sessions.queue
+	q := call[model.Queue](t, c, "sessions.queue", map[string]any{"session_id": ph.ID})
+	if !q.Available || *q.CurrentIndex != 0 || len(q.Items) != 3 || *q.Items[2].Title != "Track 3" || *q.Source != "jellyfin" {
+		t.Fatalf("queue %+v", q)
+	}
+	// lyrics.get (remote, synced)
+	l := call[model.Lyrics](t, c, "lyrics.get", map[string]any{"session_id": ph.ID})
+	if l.Status != "ok" || !l.Synced || l.Lines[0].Text != "Hello" || *l.Lines[0].StartMS != 1000 || *l.TrackID != ids[0] {
+		t.Fatalf("lyrics %+v", l)
+	}
+	// lyrics.get (local, from MPRIS metadata)
+	ll := call[model.Lyrics](t, c, "lyrics.get", map[string]any{"session_id": "mpris:Feishin"})
+	if ll.Status != "ok" || *ll.Source != "mpris" || ll.Lines[0].Text != "Local line" {
+		t.Errorf("local lyrics %+v", ll)
+	}
+	// library.playlists
+	pls := call[map[string][]model.Playlist](t, c, "library.playlists", map[string]any{"server": "home"})["playlists"]
+	if len(pls) != 1 || pls[0].Name != "Road Trip" || *pls[0].ItemCount != 2 {
+		t.Fatalf("playlists %+v", pls)
+	}
+
+	// Subscribe, then jump in the queue: verified, and the queue changes.
+	call[map[string]any](t, c, "subscribe", nil)
+	res := call[model.CommandResult](t, c, "player.command", map[string]any{"session_id": ph.ID, "command": "queue_jump", "index": 2})
+	if res.Outcome != model.OutcomeVerified {
+		t.Errorf("queue_jump %+v", res)
+	}
+	nextEvent(t, c, "queue.changed", func(e event) bool { return e.Type == "queue.changed" && e.SessionID == ph.ID })
+	got := h.jf.ClientState(phone.SessionID).Received
+	if got[len(got)-1] != "Play(PlayNow:"+strings.Join(ids, ",")+"@2)" {
+		t.Errorf("jump sent %v", got)
+	}
+	// play_items with a playlist: expanded in playlist order, verified.
+	res = call[model.CommandResult](t, c, "player.command", map[string]any{"session_id": ph.ID, "command": "play_items", "item_ids": []string{"plist000000000000000000000000001"}})
+	if res.Outcome != model.OutcomeVerified {
+		t.Errorf("play_items %+v", res)
+	}
+	got = h.jf.ClientState(phone.SessionID).Received
+	if got[len(got)-1] != "Play(PlayNow:"+ids[2]+","+ids[0]+"@0)" {
+		t.Errorf("play_items sent %v", got)
+	}
+	res = call[model.CommandResult](t, c, "player.command", map[string]any{"session_id": ph.ID, "command": "play_items", "item_ids": []string{ids[1]}, "mode": "last"})
+	if res.Outcome != model.OutcomeVerified {
+		t.Errorf("play_items last %+v", res)
+	}
+
+	// Errors.
+	if e := callErr(t, c, "player.command", map[string]any{"session_id": ph.ID, "command": "queue_jump"}); e.RPCCode != -32602 {
+		t.Errorf("missing index: %+v", e)
+	}
+	if e := callErr(t, c, "player.command", map[string]any{"session_id": ph.ID, "command": "play_items", "item_ids": []string{"x"}, "mode": "soon"}); e.Code != "invalid_argument" {
+		t.Errorf("bad mode: %+v", e)
+	}
+	if e := callErr(t, c, "player.command", map[string]any{"session_id": "mpris:Feishin", "command": "queue_jump", "index": 0}); e.Code != "unsupported_capability" {
+		t.Errorf("local without queue: %+v", e)
+	}
+	if e := callErr(t, c, "sessions.queue", map[string]any{"session_id": "nope"}); e.Code != "session_not_found" {
+		t.Errorf("queue missing session: %+v", e)
+	}
+	if lq := call[model.Queue](t, c, "sessions.queue", map[string]any{"session_id": "mpris:Feishin"}); lq.Available || lq.Items == nil {
+		t.Errorf("local queue %+v", lq)
+	}
+}
+
+func TestQueueUnavailableOnJellyfin122(t *testing.T) {
+	h := newHarness(t, true, nil) // default fake = 12.2 behaviour
+	h.jf.AddClient(&fakejellyfin.Client{
+		UserID: h.jf.UserID("alice"), Client: "Finamp", DeviceName: "iPhone", DeviceID: "iphone-2", Controllable: true,
+		ItemID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", Title: "Track 1", RunTimeTicks: 1_000_000_000,
+		Queue: []fakejellyfin.QueueEntry{{ID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2"}},
+	})
+	c := h.client()
+	call[map[string]any](t, c, "jellyfin.login", map[string]any{"server": "home", "username": "alice", "password": "correct horse battery staple"})
+	s := waitList(t, c, nil, "phone", func(s snap) bool { return len(s.Sessions) == 1 })
+	if s.Sessions[0].Has(model.CapQueue) || s.Sessions[0].Has(model.CapQueueJump) {
+		t.Errorf("caps %v", s.Sessions[0].Capabilities)
+	}
+	q := call[model.Queue](t, c, "sessions.queue", map[string]any{"session_id": s.Sessions[0].ID})
+	b, _ := json.Marshal(q)
+	if string(b) != `{"session_id":"`+s.Sessions[0].ID+`","available":false,"current_index":null,"items":[],"source":null}` {
+		t.Errorf("unavailable queue JSON: %s", b)
+	}
 }

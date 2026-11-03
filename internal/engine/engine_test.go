@@ -2,9 +2,11 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -670,4 +672,182 @@ func TestPausingKeepsSelectionAndInitialSyncIsNotActivity(t *testing.T) {
 	time.Sleep(2 * time.Millisecond)
 	local.Set(pt.Session("mpris:a", model.OriginLocal, "A", model.StatePaused, pt.AllCaps...))
 	waitUntil(t, "still selected", func() bool { return sel() == "mpris:a" })
+}
+
+func eventsOf(sub *Subscription, d time.Duration) []Event {
+	var out []Event
+	deadline := time.After(d)
+	for {
+		select {
+		case ev, ok := <-sub.Events():
+			if !ok {
+				return out
+			}
+			out = append(out, ev)
+		case <-deadline:
+			return out
+		}
+	}
+}
+
+func TestLinkedLocalBorrowsQueueLyricsAndRoutesCommands(t *testing.T) {
+	e := newEngine(t, nil)
+	local := pt.Session("mpris:feishin", model.OriginLocal, "Track 1", model.StatePlaying, model.AllCapabilities[:8]...)
+	local.Track.Artists = []string{"Artist A"}
+	local.Player.BusName = model.Ptr("org.mpris.MediaPlayer2.feishin")
+	lf := addFake(t, e, "mpris", "mpris", model.OriginLocal, local)
+
+	// Feishin's own Jellyfin session on this host (device = hostname).
+	remote := remoteSession("jf:feishin", "Track 1", "mydesk", model.StatePlaying,
+		model.CapPlay, model.CapPause, model.CapQueue, model.CapQueueJump, model.CapPlayItems, model.CapLyrics)
+	remote.Track.Artists = []string{"Artist A"}
+	remote.Track.TrackID = model.Ptr("item-1")
+	remote.QueueRevision = "r1"
+	rf := pt.NewFake("jellyfin:home", "jellyfin", model.OriginRemote)
+	rf.SetQueue("jf:feishin", model.Queue{SessionID: "jf:feishin", Available: true, CurrentIndex: model.Ptr(0), Source: model.Ptr("jellyfin"),
+		Items: []model.QueueItem{{Index: 0, ItemID: "item-1", Title: model.Ptr("Track 1")}, {Index: 1, ItemID: "item-2", Title: model.Ptr("Track 2")}}})
+	rf.SetLyrics("jf:feishin", model.Lyrics{Status: model.LyricsOK, Synced: true, Lines: []model.LyricLine{{StartMS: model.Ptr[int64](0), Text: "la"}}, Source: model.Ptr("jellyfin")})
+	rf.Set(remote)
+	e.AddProvider(rf)
+	rf.WaitReady()
+	waitUntil(t, "linked", func() bool {
+		s, _ := e.Session("mpris:feishin")
+		return len(s.Linked) == 1
+	})
+	s, _ := e.Session("mpris:feishin")
+	for _, c := range []model.Capability{model.CapQueue, model.CapLyrics, model.CapQueueJump, model.CapPlayItems} {
+		if !s.Has(c) {
+			t.Errorf("local session should borrow %s: %v", c, s.Capabilities)
+		}
+	}
+	ctx := context.Background()
+	q, err := e.Queue(ctx, "mpris:feishin")
+	if err != nil || !q.Available || q.SessionID != "mpris:feishin" || len(q.Items) != 2 {
+		t.Fatalf("queue %+v %v", q, err)
+	}
+	l, err := e.Lyrics(ctx, "mpris:feishin")
+	if err != nil || l.Status != model.LyricsOK || l.SessionID != "mpris:feishin" || *l.Source != "jellyfin" {
+		t.Fatalf("lyrics %+v %v", l, err)
+	}
+
+	if _, err := e.Command(ctx, "mpris:feishin", model.Command{Name: model.CmdQueueJump, Index: model.Ptr(5)}); model.CodeOf(err) != model.ErrInvalidArgument {
+		t.Errorf("out of range: %v", err)
+	}
+	// queue_jump on the local session is carried out by the remote one.
+	res, err := e.Command(ctx, "mpris:feishin", model.Command{Name: model.CmdQueueJump, Index: model.Ptr(1)})
+	if err != nil || res.ViaSessionID != "jf:feishin" || res.SessionID != "mpris:feishin" || res.Outcome != model.OutcomeVerified {
+		t.Fatalf("jump %+v %v", res, err)
+	}
+	if len(lf.Calls()) != 0 || len(rf.Calls()) != 1 {
+		t.Errorf("routing local=%v remote=%v", lf.Calls(), rf.Calls())
+	}
+	// Ordinary commands still go to the local player only.
+	if _, err := e.Command(ctx, "mpris:feishin", model.Command{Name: model.CmdPause}); err != nil {
+		t.Fatal(err)
+	}
+	if len(lf.Calls()) != 1 || len(rf.Calls()) != 1 {
+		t.Errorf("pause misrouted: local=%v remote=%v", lf.Calls(), rf.Calls())
+	}
+}
+
+func TestQueueChangedEvents(t *testing.T) {
+	e := newEngine(t, nil)
+	r := remoteSession("jf:phone", "Song", "Pixel", model.StatePlaying, model.CapQueue)
+	r.QueueRevision = "a"
+	f := addFake(t, e, "jellyfin:home", "jellyfin", model.OriginRemote, r)
+	_, sub := e.Subscribe(Filter{})
+	defer sub.Close()
+
+	r.QueueRevision = "b" // only the queue changed
+	f.Set(r)
+	evs := eventsOf(sub, 200*time.Millisecond)
+	types := []string{}
+	for _, ev := range evs {
+		types = append(types, string(ev.Type)+":"+ev.SessionID)
+	}
+	if len(types) != 1 || types[0] != "queue.changed:jf:phone" {
+		t.Errorf("events %v (want only queue.changed, no session.updated)", types)
+	}
+	// The internal revision is not part of the API.
+	b, _ := json.Marshal(evs[0])
+	if strings.Contains(string(b), "QueueRevision") || strings.Contains(string(b), "queue_revision") {
+		t.Errorf("revision leaked: %s", b)
+	}
+}
+
+func TestViewOnlyKeepsReadOnlyCapabilities(t *testing.T) {
+	e := newEngine(t, nil)
+	r := remoteSession("jf:web", "Song", "Firefox", model.StatePlaying, model.CapQueue, model.CapLyrics, model.CapPlay)
+	r.Controllable = false
+	addFake(t, e, "jellyfin:home", "jellyfin", model.OriginRemote, r)
+	s, _ := e.Session("jf:web")
+	if !s.Has(model.CapQueue) || !s.Has(model.CapLyrics) || s.Has(model.CapPlay) {
+		t.Errorf("caps %v", s.Capabilities)
+	}
+}
+
+type fallback struct{ calls int }
+
+func (f *fallback) Lookup(_ context.Context, tr model.Track) ([]model.LyricLine, bool, bool, error) {
+	f.calls++
+	if *tr.Title == "Known" {
+		return []model.LyricLine{{Text: "from fallback"}}, false, true, nil
+	}
+	return nil, false, false, nil
+}
+
+func TestLyricsSourcesInOrder(t *testing.T) {
+	fb := &fallback{}
+	e := newEngine(t, func(o *Options) { o.LyricsFallback = fb })
+	// Local player playing a media-server item (Feishin-style track id), not linked.
+	local := pt.Session("mpris:feishin", model.OriginLocal, "Known", model.StatePlaying)
+	local.Track.Artists = []string{"A"}
+	local.Track.TrackID = model.Ptr("/org/node/mediaplayer/feishin/track/3b8df01c3a2a8ebe63ab3ea2d8fc79cd")
+	other := pt.Session("mpris:vlc", model.OriginLocal, "Unknown", model.StatePlaying)
+	other.Track.Artists = []string{"A"}
+	untitled := pt.Session("mpris:x", model.OriginLocal, "", model.StatePlaying)
+	addFake(t, e, "mpris", "mpris", model.OriginLocal, local, other, untitled)
+	server := addFake(t, e, "jellyfin:home", "jellyfin", model.OriginRemote)
+	server.SetItemLyrics("3b8df01c3a2a8ebe63ab3ea2d8fc79cd", model.Lyrics{Status: model.LyricsOK, Lines: []model.LyricLine{{Text: "from server"}}, Source: model.Ptr("jellyfin")})
+	ctx := context.Background()
+
+	waitUntil(t, "lyrics caps", func() bool {
+		s, _ := e.Session("mpris:feishin")
+		return s.Has(model.CapLyrics)
+	})
+	if l, _ := e.Lyrics(ctx, "mpris:feishin"); l.Status != model.LyricsOK || l.Lines[0].Text != "from server" {
+		t.Errorf("server item lyrics: %+v", l)
+	}
+	if fb.calls != 0 {
+		t.Error("fallback used although the server had lyrics")
+	}
+	if l, _ := e.Lyrics(ctx, "mpris:vlc"); l.Status != model.LyricsNone || fb.calls != 1 {
+		t.Errorf("fallback none: %+v calls=%d", l, fb.calls)
+	}
+	s, _ := e.Session("mpris:x")
+	if s.Has(model.CapLyrics) {
+		t.Error("lyrics capability without title")
+	}
+	if l, _ := e.Lyrics(ctx, "mpris:x"); l.Status != model.LyricsNone && l.Status != model.LyricsUnavailable {
+		t.Errorf("untitled: %+v", l)
+	}
+	if _, err := e.Lyrics(ctx, "nope"); model.CodeOf(err) != model.ErrSessionNotFound {
+		t.Errorf("missing: %v", err)
+	}
+	if q, err := e.Queue(ctx, "mpris:vlc"); err != nil || q.Available || q.Items == nil {
+		t.Errorf("no queue: %+v %v", q, err)
+	}
+}
+
+func TestMediaServerItemID(t *testing.T) {
+	for in, want := range map[string]string{
+		"/org/node/mediaplayer/feishin/track/3b8df01c3a2a8ebe63ab3ea2d8fc79cd": "3b8df01c3a2a8ebe63ab3ea2d8fc79cd",
+		"/org/node/track/3b8df01c-3a2a-8ebe-63ab-3ea2d8fc79cd":                 "3b8df01c3a2a8ebe63ab3ea2d8fc79cd",
+		"/org/mpris/MediaPlayer2/Track/42":                                     "",
+		"spotify:track:4uLU6hMCjMI75M1A2tKUQC":                                 "",
+	} {
+		if got := mediaServerItemID(&in); got != want {
+			t.Errorf("%s: %q", in, got)
+		}
+	}
 }

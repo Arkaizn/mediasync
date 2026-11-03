@@ -17,6 +17,9 @@ const (
 	EventProviderStatus   EventType = "provider.status"
 	EventProviderRemoved  EventType = "provider.removed"
 	EventSettingsChanged  EventType = "settings.changed"
+	// EventQueueChanged notifies that a session's queue changed; clients
+	// re-fetch it with sessions.queue.
+	EventQueueChanged EventType = "queue.changed"
 )
 
 // Event is a change notification. Revision increases by one per event.
@@ -102,6 +105,13 @@ func (e *Engine) emitLocked(ev Event) {
 	}
 }
 
+// sessionsEqual compares sessions as consumers see them (QueueRevision is
+// internal and reported through queue.changed instead).
 func sessionsEqual(a, b *model.Session) bool {
+	if a.QueueRevision != b.QueueRevision {
+		x, y := *a, *b
+		x.QueueRevision, y.QueueRevision = "", ""
+		return reflect.DeepEqual(&x, &y)
+	}
 	return reflect.DeepEqual(a, b)
 }

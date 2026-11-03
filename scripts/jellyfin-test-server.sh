@@ -9,8 +9,10 @@
 #   JELLYFIN_PORT   (default 8096)
 #   JELLYFIN_NAME   (container name, default mediasync-jellyfin-it)
 #
-# The server gets a throw-away user (tester / random password) and a music
-# library with three generated tones. Nothing here is meant for real use.
+# The server gets a throw-away user (tester / random password), a music
+# library with three generated tones (Track 1 with synced .lrc lyrics,
+# Track 2 with plain .txt lyrics) and a playlist "Road Trip" [Track 3,
+# Track 1]. Nothing here is meant for real use.
 set -euo pipefail
 
 IMAGE="${JELLYFIN_IMAGE:-jellyfin/jellyfin:12.2}"
@@ -66,7 +68,9 @@ start() {
   docker exec "$NAME" sh -c 'mkdir -p /media/music/ArtistA/AlbumX && cd /media/music/ArtistA/AlbumX &&
     for i in 1 2 3; do /usr/lib/jellyfin-ffmpeg/ffmpeg -loglevel error -y -f lavfi \
       -i "sine=frequency=$((300+i*100)):duration=180" -metadata title="Track $i" -metadata artist="Artist A" \
-      -metadata album="Album X" -metadata album_artist="Artist A" -metadata track=$i 0$i.mp3; done'
+      -metadata album="Album X" -metadata album_artist="Artist A" -metadata track=$i 0$i.mp3; done &&
+    printf "[ar:Artist A]\n[ti:Track 1]\n[00:01.00]First line of track one\n[00:05.50]Second line\n[00:10.00]Third line\n" > 01.lrc &&
+    printf "Plain line one\nPlain line two\n" > 02.txt'
 
   AUTH='MediaBrowser Client="mediasync-setup", Device="setup", DeviceId="mediasync-setup", Version="1"'
   TOKEN="$(api -X POST "$URL/Users/AuthenticateByName" -H "Authorization: $AUTH" \
@@ -81,6 +85,12 @@ start() {
     [ "$n" -ge 3 ] && break
     sleep 2
   done
+  # A playlist [Track 3, Track 1] (deliberately not in name order).
+  USER_ID="$(api "$URL/Users/Me" -H "$H" | python3 -c 'import json,sys; print(json.load(sys.stdin)["Id"])')"
+  IDS="$(api "$URL/Items?recursive=true&includeItemTypes=Audio&sortBy=SortName" -H "$H" |
+    python3 -c 'import json,sys; i=[x["Id"] for x in json.load(sys.stdin)["Items"]]; print(json.dumps([i[2], i[0]]))')"
+  api -X POST "$URL/Playlists" -H "$H" -H 'Content-Type: application/json' \
+    -d "{\"Name\":\"Road Trip\",\"Ids\":$IDS,\"UserId\":\"$USER_ID\",\"MediaType\":\"Audio\"}" >/dev/null
   curl -fsS -X POST "$URL/Sessions/Logout" -H "$H" >/dev/null || true
   version="$(curl -fsS "$URL/System/Info/Public" | python3 -c 'import json,sys; print(json.load(sys.stdin)["Version"])')"
   echo "# Jellyfin $version ready ($n audio items). Export:" >&2

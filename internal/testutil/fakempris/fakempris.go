@@ -9,7 +9,6 @@ import (
 
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
-	"github.com/godbus/dbus/v5/prop"
 )
 
 const (
@@ -27,6 +26,8 @@ type Track struct {
 	ArtURL   string
 	URL      string
 	LengthUS int64
+	// Lyrics is published as xesam:asText (Feishin publishes LRC there).
+	Lyrics string
 }
 
 // Options configure a fake player.
@@ -75,7 +76,7 @@ func FullCaps(name string) Options {
 type Player struct {
 	Conn  *dbus.Conn
 	opts  Options
-	props *prop.Properties
+	props *propStore
 
 	mu       sync.Mutex
 	calls    []string
@@ -101,37 +102,37 @@ func Start(conn *dbus.Conn, opts Options) (*Player, error) {
 	if err := conn.ExportWithMap(&playerHandler{p}, map[string]string{"SeekBy": "Seek"}, path, ifacePlayer); err != nil {
 		return nil, err
 	}
-	playerProps := map[string]*prop.Prop{
-		"PlaybackStatus": {Value: p.status, Emit: prop.EmitTrue},
-		"Rate":           {Value: 1.0, Emit: prop.EmitTrue},
-		"Position":       {Value: opts.PositionUS, Emit: prop.EmitFalse},
-		"CanControl":     {Value: opts.CanControl, Emit: prop.EmitConst},
-		"CanPlay":        {Value: opts.CanPlay, Emit: prop.EmitTrue},
-		"CanPause":       {Value: opts.CanPause, Emit: prop.EmitTrue},
-		"CanGoNext":      {Value: opts.CanGoNext, Emit: prop.EmitTrue},
-		"CanGoPrevious":  {Value: opts.CanGoPrevious, Emit: prop.EmitTrue},
-		"CanSeek":        {Value: opts.CanSeek, Emit: prop.EmitTrue},
-		"LoopStatus":     {Value: "None", Writable: true, Emit: prop.EmitTrue},
-		"Shuffle":        {Value: false, Writable: true, Emit: prop.EmitTrue},
+	playerProps := map[string]*fprop{
+		"PlaybackStatus": {Value: p.status, Emit: emitTrue},
+		"Rate":           {Value: 1.0, Emit: emitTrue},
+		"Position":       {Value: opts.PositionUS, Emit: emitFalse},
+		"CanControl":     {Value: opts.CanControl, Emit: emitConst},
+		"CanPlay":        {Value: opts.CanPlay, Emit: emitTrue},
+		"CanPause":       {Value: opts.CanPause, Emit: emitTrue},
+		"CanGoNext":      {Value: opts.CanGoNext, Emit: emitTrue},
+		"CanGoPrevious":  {Value: opts.CanGoPrevious, Emit: emitTrue},
+		"CanSeek":        {Value: opts.CanSeek, Emit: emitTrue},
+		"LoopStatus":     {Value: "None", Writable: true, Emit: emitTrue},
+		"Shuffle":        {Value: false, Writable: true, Emit: emitTrue},
 	}
 	if !opts.OmitMetadata {
-		playerProps["Metadata"] = &prop.Prop{Value: p.metadataLocked(), Emit: prop.EmitTrue}
+		playerProps["Metadata"] = &fprop{Value: p.metadataLocked(), Emit: emitTrue}
 	}
 	if opts.Volume != nil {
-		playerProps["Volume"] = &prop.Prop{Value: *opts.Volume, Writable: !opts.VolumeReadOnly, Emit: prop.EmitTrue}
+		playerProps["Volume"] = &fprop{Value: *opts.Volume, Writable: !opts.VolumeReadOnly, Emit: emitTrue}
 	}
-	rootProps := map[string]*prop.Prop{
-		"Identity":            {Value: opts.Identity, Emit: prop.EmitTrue},
-		"CanQuit":             {Value: false, Emit: prop.EmitConst},
-		"CanRaise":            {Value: false, Emit: prop.EmitConst},
-		"HasTrackList":        {Value: false, Emit: prop.EmitConst},
-		"SupportedUriSchemes": {Value: []string{}, Emit: prop.EmitConst},
-		"SupportedMimeTypes":  {Value: []string{}, Emit: prop.EmitConst},
+	rootProps := map[string]*fprop{
+		"Identity":            {Value: opts.Identity, Emit: emitTrue},
+		"CanQuit":             {Value: false, Emit: emitConst},
+		"CanRaise":            {Value: false, Emit: emitConst},
+		"HasTrackList":        {Value: false, Emit: emitConst},
+		"SupportedUriSchemes": {Value: []string{}, Emit: emitConst},
+		"SupportedMimeTypes":  {Value: []string{}, Emit: emitConst},
 	}
 	if opts.DesktopEntry != "" {
-		rootProps["DesktopEntry"] = &prop.Prop{Value: opts.DesktopEntry, Emit: prop.EmitConst}
+		rootProps["DesktopEntry"] = &fprop{Value: opts.DesktopEntry, Emit: emitConst}
 	}
-	props, err := prop.Export(conn, path, prop.Map{ifaceRoot: rootProps, ifacePlayer: playerProps})
+	props, err := exportProps(conn, map[string]map[string]*fprop{ifaceRoot: rootProps, ifacePlayer: playerProps})
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +141,7 @@ func Start(conn *dbus.Conn, opts Options) (*Player, error) {
 		Name: string(path),
 		Interfaces: []introspect.Interface{
 			introspect.IntrospectData,
-			prop.IntrospectData,
+			propsIntrospectData,
 			{Name: ifaceRoot, Methods: introspect.Methods(root), Properties: props.Introspection(ifaceRoot)},
 			{Name: ifacePlayer, Methods: introspect.Methods(&playerHandler{p}), Properties: props.Introspection(ifacePlayer)},
 		},
@@ -199,6 +200,9 @@ func (p *Player) metadataLocked() map[string]dbus.Variant {
 	}
 	if t.LengthUS > 0 {
 		md["mpris:length"] = dbus.MakeVariant(t.LengthUS)
+	}
+	if t.Lyrics != "" {
+		md["xesam:asText"] = dbus.MakeVariant(t.Lyrics)
 	}
 	return md
 }
@@ -372,9 +376,9 @@ func (p *Player) track() int {
 	return p.trackIdx
 }
 
-// set updates a property, ignoring errors from a closed connection (a fake
-// player may still be finishing a delayed method call after a test ends).
+// set updates a property and emits PropertiesChanged; errors from a closed
+// connection are ignored (a fake player may still be finishing a delayed
+// method call after a test ends).
 func (p *Player) set(iface, name string, v any) {
-	defer func() { _ = recover() }()
-	p.props.SetMust(iface, name, v)
+	p.props.set(iface, name, v)
 }

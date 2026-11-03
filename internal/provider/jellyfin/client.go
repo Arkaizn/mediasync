@@ -344,6 +344,14 @@ type BaseItem struct {
 	ImageTags            map[string]string `json:"ImageTags"`
 	AlbumPrimaryImageTag string            `json:"AlbumPrimaryImageTag"`
 	SeriesName           string            `json:"SeriesName"`
+	HasLyrics            *bool             `json:"HasLyrics"`
+	ChildCount           *int              `json:"ChildCount"`
+}
+
+// QueueEntry is a NowPlayingQueue element.
+type QueueEntry struct {
+	ID             string `json:"Id"`
+	PlaylistItemID string `json:"PlaylistItemId"`
 }
 
 // PlayState is PlayerStateInfo.
@@ -377,6 +385,12 @@ type SessionInfo struct {
 	LastPlaybackCheckIn   time.Time `json:"LastPlaybackCheckIn"`
 	NowPlayingItem        *BaseItem `json:"NowPlayingItem"`
 	PlayState             PlayState `json:"PlayState"`
+	PlayableMediaTypes    []string  `json:"PlayableMediaTypes"`
+	// NowPlayingQueue is reported by clients during playback on Jellyfin
+	// 10.10; Jellyfin 12.2 only stores it when playback stops (verified).
+	NowPlayingQueue          []QueueEntry `json:"NowPlayingQueue"`
+	NowPlayingQueueFullItems []BaseItem   `json:"NowPlayingQueueFullItems"`
+	PlaylistItemID           string       `json:"PlaylistItemId"`
 }
 
 // Sessions lists sessions visible to the authenticated user.
@@ -384,6 +398,77 @@ func (c *Client) Sessions(ctx context.Context) ([]SessionInfo, error) {
 	var out []SessionInfo
 	err := c.do(ctx, http.MethodGet, "/Sessions", nil, nil, &out, model.ErrProviderError)
 	return out, err
+}
+
+type itemsResult struct {
+	Items []BaseItem `json:"Items"`
+}
+
+// Items fetches items by id (order not guaranteed). Unknown ids are omitted.
+func (c *Client) Items(ctx context.Context, userID string, ids []string) ([]BaseItem, error) {
+	var out []BaseItem
+	for start := 0; start < len(ids); start += 100 {
+		end := min(start+100, len(ids))
+		q := url.Values{"ids": {strings.Join(ids[start:end], ",")}, "fields": {"ChildCount"}}
+		if userID != "" {
+			q.Set("userId", userID)
+		}
+		var res itemsResult
+		if err := c.do(ctx, http.MethodGet, "/Items", q, nil, &res, model.ErrProviderError); err != nil {
+			return nil, err
+		}
+		out = append(out, res.Items...)
+	}
+	return out, nil
+}
+
+// Playlists lists the user's playlists, sorted by name.
+func (c *Client) Playlists(ctx context.Context, userID string) ([]BaseItem, error) {
+	q := url.Values{"recursive": {"true"}, "includeItemTypes": {"Playlist"}, "fields": {"ChildCount"},
+		"sortBy": {"SortName"}, "userId": {userID}}
+	var res itemsResult
+	err := c.do(ctx, http.MethodGet, "/Items", q, nil, &res, model.ErrProviderError)
+	return res.Items, err
+}
+
+// PlaylistItems returns a playlist's entries in playlist order.
+func (c *Client) PlaylistItems(ctx context.Context, userID, playlistID string) ([]BaseItem, error) {
+	q := url.Values{"userId": {userID}}
+	var res itemsResult
+	err := c.do(ctx, http.MethodGet, "/Playlists/"+url.PathEscape(playlistID)+"/Items", q, nil, &res, model.ErrInvalidArgument)
+	return res.Items, err
+}
+
+// LyricLineDto is one line of LyricDto.
+type LyricLineDto struct {
+	Text  string `json:"Text"`
+	Start *int64 `json:"Start"`
+}
+
+// LyricsDto is the GET /Audio/{id}/Lyrics response.
+type LyricsDto struct {
+	Lyrics []LyricLineDto `json:"Lyrics"`
+}
+
+// Lyrics fetches an item's lyrics. found is false on HTTP 404 (no lyrics, or
+// unknown item).
+func (c *Client) Lyrics(ctx context.Context, itemID string) (LyricsDto, bool, error) {
+	var out LyricsDto
+	err := c.do(ctx, http.MethodGet, "/Audio/"+url.PathEscape(itemID)+"/Lyrics", nil, nil, &out, model.ErrSessionNotFound)
+	if err != nil && model.CodeOf(err) == model.ErrSessionNotFound {
+		return out, false, nil
+	}
+	return out, err == nil, err
+}
+
+// PlayCommand asks a session to play items: playCommand is PlayNow,
+// PlayNext or PlayLast. The server expands albums/playlists into tracks.
+func (c *Client) PlayCommand(ctx context.Context, sessionID, playCommand string, itemIDs []string, startIndex *int) error {
+	q := url.Values{"playCommand": {playCommand}, "itemIds": {strings.Join(itemIDs, ",")}}
+	if startIndex != nil {
+		q.Set("startIndex", strconv.Itoa(*startIndex))
+	}
+	return c.do(ctx, http.MethodPost, "/Sessions/"+url.PathEscape(sessionID)+"/Playing", q, nil, nil, model.ErrSessionNotFound)
 }
 
 // PlaystateCommand sends a playstate command (Pause, Unpause, PlayPause,

@@ -32,6 +32,9 @@ func (s *Service) registerAPI() {
 	h("jellyfin.login", s.apiJellyfinLogin)
 	h("jellyfin.logout", s.apiJellyfinLogout)
 	h("jellyfin.check", s.apiJellyfinCheck)
+	h("sessions.queue", s.apiSessionsQueue)
+	h("lyrics.get", s.apiLyricsGet)
+	h("library.playlists", s.apiLibraryPlaylists)
 	h("service.reload", s.apiReload)
 }
 
@@ -130,6 +133,9 @@ type commandParams struct {
 	PositionMS *int64            `json:"position_ms"`
 	OffsetMS   *int64            `json:"offset_ms"`
 	Volume     *float64          `json:"volume"`
+	Index      *int              `json:"index"`
+	ItemIDs    []string          `json:"item_ids"`
+	Mode       string            `json:"mode"`
 }
 
 func (s *Service) apiPlayerCommand(ctx context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
@@ -140,7 +146,8 @@ func (s *Service) apiPlayerCommand(ctx context.Context, _ *ipc.Conn, raw json.Ra
 	if p.Command == "" {
 		return nil, ipc.InvalidParams("command is required")
 	}
-	return s.engine.Command(ctx, p.SessionID, model.Command{Name: p.Command, PositionMS: p.PositionMS, OffsetMS: p.OffsetMS, Volume: p.Volume})
+	return s.engine.Command(ctx, p.SessionID, model.Command{Name: p.Command, PositionMS: p.PositionMS, OffsetMS: p.OffsetMS,
+		Volume: p.Volume, Index: p.Index, ItemIDs: p.ItemIDs, Mode: p.Mode})
 }
 
 // clientSub tracks one connection's subscription and the set of sessions
@@ -176,6 +183,11 @@ func (cs *clientSub) translate(ev engine.Event) (engine.Event, bool) {
 			return ev, false
 		}
 		delete(cs.known, ev.SessionID)
+	case engine.EventQueueChanged:
+		// Only for sessions this client can see.
+		if !cs.known[ev.SessionID] {
+			return ev, false
+		}
 	}
 	return ev, true
 }
@@ -344,4 +356,48 @@ func (s *Service) apiReload(_ context.Context, _ *ipc.Conn, _ json.RawMessage) (
 		return nil, err
 	}
 	return map[string]any{"reloaded": true}, nil
+}
+
+func (s *Service) apiSessionsQueue(ctx context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
+	var p sessionIDParams
+	if err := ipc.DecodeParams(raw, &p); err != nil {
+		return nil, err
+	}
+	if p.SessionID == "" {
+		return nil, ipc.InvalidParams("session_id is required")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	return s.engine.Queue(ctx, p.SessionID)
+}
+
+func (s *Service) apiLyricsGet(ctx context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
+	var p sessionIDParams
+	if err := ipc.DecodeParams(raw, &p); err != nil {
+		return nil, err
+	}
+	if p.SessionID == "" {
+		return nil, ipc.InvalidParams("session_id is required")
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	return s.engine.Lyrics(ctx, p.SessionID)
+}
+
+func (s *Service) apiLibraryPlaylists(ctx context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
+	var p serverParams
+	if err := ipc.DecodeParams(raw, &p); err != nil {
+		return nil, err
+	}
+	prov, err := s.jellyfinProvider(p.Server)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	pls, err := prov.Playlists(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{"playlists": pls}, nil
 }

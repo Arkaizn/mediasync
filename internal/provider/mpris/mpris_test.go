@@ -418,3 +418,37 @@ func TestBusLossEndsRunAndRemovesSessions(t *testing.T) {
 		t.Error("sessions not removed after bus loss")
 	}
 }
+
+func TestLyricsFromMetadata(t *testing.T) {
+	e := start(t, Config{}, nil)
+	opts := fakempris.FullCaps("Feishin")
+	// What Feishin publishes: LRC with metadata tags and an offset.
+	opts.Tracks[0].Lyrics = "[ar:Artist One]\n[ti:First Song]\n[offset:0]\n[00:01.000]Hello\n[00:04.500]World\n"
+	opts.Tracks[1].Lyrics = "Just text\nno timestamps\n"
+	pl := newPlayer(t, e.bus, opts)
+	s := e.sink.WaitSession(t, "mpris:Feishin", wait, "feishin", nil)
+	if !s.Has(model.CapLyrics) {
+		t.Fatalf("caps %v", s.Capabilities)
+	}
+	l, err := e.prov.Lyrics(context.Background(), s.ID)
+	if err != nil || l.Status != model.LyricsOK || !l.Synced || len(l.Lines) != 2 || *l.Lines[1].StartMS != 4500 || *l.Source != "mpris" {
+		t.Fatalf("lyrics %+v %v", l, err)
+	}
+	if l.TrackID == nil || *l.TrackID != "/org/example/track/t1" {
+		t.Errorf("track id %v", l.TrackID)
+	}
+	pl.SetTrack(1)
+	e.sink.WaitSession(t, s.ID, wait, "track 2", func(x model.Session) bool { return *x.Track.Title == "Second Song" })
+	l, _ = e.prov.Lyrics(context.Background(), s.ID)
+	if l.Status != model.LyricsOK || l.Synced || len(l.Lines) != 2 || l.Lines[0].StartMS != nil {
+		t.Errorf("plain %+v", l)
+	}
+	pl.SetTrack(2)
+	s = e.sink.WaitSession(t, s.ID, wait, "track 3", func(x model.Session) bool { return *x.Track.Title == "Third Song" })
+	if s.Has(model.CapLyrics) {
+		t.Error("lyrics capability without lyrics")
+	}
+	if l, _ := e.prov.Lyrics(context.Background(), s.ID); l.Status != model.LyricsNone {
+		t.Errorf("none %+v", l)
+	}
+}

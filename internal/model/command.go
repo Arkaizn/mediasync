@@ -15,7 +15,21 @@ const (
 	CmdSeek CommandName = "seek"
 	// CmdSetVolume sets the volume to Volume (0.0–1.0).
 	CmdSetVolume CommandName = "set_volume"
+	// CmdQueueJump plays the queue item at Index (see sessions.queue).
+	CmdQueueJump CommandName = "queue_jump"
+	// CmdPlayItems plays tracks, albums or playlists (ItemIDs) now, next or last (Mode).
+	CmdPlayItems CommandName = "play_items"
 )
+
+// Play modes for CmdPlayItems.
+const (
+	PlayModeNow  = "now"
+	PlayModeNext = "next"
+	PlayModeLast = "last"
+)
+
+// MaxPlayItems bounds the number of item ids in one play_items command.
+const MaxPlayItems = 200
 
 // Command is a playback command addressed to one session.
 type Command struct {
@@ -23,6 +37,9 @@ type Command struct {
 	PositionMS *int64      `json:"position_ms,omitempty"`
 	OffsetMS   *int64      `json:"offset_ms,omitempty"`
 	Volume     *float64    `json:"volume,omitempty"`
+	Index      *int        `json:"index,omitempty"`
+	ItemIDs    []string    `json:"item_ids,omitempty"`
+	Mode       string      `json:"mode,omitempty"`
 }
 
 // RequiredCapability returns the capability a command needs.
@@ -44,6 +61,10 @@ func (c Command) RequiredCapability() (Capability, bool) {
 		return CapSeek, true
 	case CmdSetVolume:
 		return CapVolume, true
+	case CmdQueueJump:
+		return CapQueueJump, true
+	case CmdPlayItems:
+		return CapPlayItems, true
 	}
 	return "", false
 }
@@ -68,12 +89,63 @@ func (c Command) Validate() error {
 		if *c.Volume < 0 || *c.Volume > 1.5 {
 			return Errorf(ErrInvalidArgument, "volume must be between 0.0 and 1.5")
 		}
+	case CmdQueueJump:
+		if c.Index == nil || *c.Index < 0 {
+			return Errorf(ErrInvalidArgument, "queue_jump requires index >= 0")
+		}
+		if c.PositionMS != nil || c.OffsetMS != nil || c.Volume != nil || c.ItemIDs != nil || c.Mode != "" {
+			return Errorf(ErrInvalidArgument, "queue_jump only takes index")
+		}
+		return nil
+	case CmdPlayItems:
+		if len(c.ItemIDs) == 0 || len(c.ItemIDs) > MaxPlayItems {
+			return Errorf(ErrInvalidArgument, "play_items requires 1 to %d item_ids", MaxPlayItems)
+		}
+		for _, id := range c.ItemIDs {
+			if !validItemID(id) {
+				return Errorf(ErrInvalidArgument, "invalid item id %q", id)
+			}
+		}
+		switch c.Mode {
+		case "", PlayModeNow, PlayModeNext, PlayModeLast:
+		default:
+			return Errorf(ErrInvalidArgument, "mode must be now, next or last")
+		}
+		if c.PositionMS != nil || c.OffsetMS != nil || c.Volume != nil || c.Index != nil {
+			return Errorf(ErrInvalidArgument, "play_items only takes item_ids and mode")
+		}
+		return nil
 	default:
 		if c.PositionMS != nil || c.OffsetMS != nil || c.Volume != nil {
 			return Errorf(ErrInvalidArgument, "command %q takes no arguments", c.Name)
 		}
 	}
+	if c.Index != nil || c.ItemIDs != nil || c.Mode != "" {
+		return Errorf(ErrInvalidArgument, "command %q does not take index, item_ids or mode", c.Name)
+	}
 	return nil
+}
+
+// PlayMode returns the play_items mode with the default applied.
+func (c Command) PlayMode() string {
+	if c.Mode == "" {
+		return PlayModeNow
+	}
+	return c.Mode
+}
+
+// validItemID accepts provider item ids: 1–64 characters of [A-Za-z0-9-_].
+func validItemID(id string) bool {
+	if id == "" || len(id) > 64 {
+		return false
+	}
+	for _, r := range id {
+		ok := r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '-' || r == '_'
+		if !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // Outcome describes how far a command's success was established.
@@ -94,6 +166,9 @@ type CommandResult struct {
 	Command   CommandName `json:"command"`
 	Outcome   Outcome     `json:"outcome"`
 	// Detail explains an acknowledged outcome.
-	Detail  string   `json:"detail,omitempty"`
-	Session *Session `json:"session,omitempty"`
+	Detail string `json:"detail,omitempty"`
+	// ViaSessionID is set when a command for a local session was carried
+	// out through its linked remote session (queue_jump, play_items).
+	ViaSessionID string   `json:"via_session_id,omitempty"`
+	Session      *Session `json:"session,omitempty"`
 }

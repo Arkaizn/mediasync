@@ -121,6 +121,8 @@ type Provider struct {
 	serverSkew time.Duration
 	lastPoll   time.Time
 	pollCount  uint64
+
+	media mediaCache
 }
 
 // New creates a provider.
@@ -643,10 +645,28 @@ func (p *Provider) mapSession(si SessionInfo, server *PublicSystemInfo, now time
 		if slices.Contains(si.SupportedCommands, "SetVolume") {
 			caps = append(caps, model.CapVolume)
 		}
-		s.Capabilities = model.SortCapabilities(caps)
+		// The server accepts play commands (204) for any session, even ones
+		// that cannot play audio (verified on 12.2), so gate on the client's
+		// declared playable media types.
+		if slices.ContainsFunc(si.PlayableMediaTypes, func(t string) bool { return strings.EqualFold(t, "Audio") }) {
+			caps = append(caps, model.CapPlayItems)
+			if len(si.NowPlayingQueue) > 0 {
+				caps = append(caps, model.CapQueueJump)
+			}
+		}
+		s.Capabilities = caps
 	} else {
 		s.Capabilities = []model.Capability{}
 	}
+	// Read-only capabilities also apply to view-only sessions.
+	if len(si.NowPlayingQueue) > 0 && s.Status != model.StatusStale {
+		s.Capabilities = append(s.Capabilities, model.CapQueue)
+		s.QueueRevision = queueRevision(si)
+	}
+	if item.HasLyrics != nil && *item.HasLyrics {
+		s.Capabilities = append(s.Capabilities, model.CapLyrics)
+	}
+	s.Capabilities = model.SortCapabilities(s.Capabilities)
 	return s
 }
 
@@ -771,6 +791,10 @@ func (p *Provider) Command(ctx context.Context, sessionID string, cmd model.Comm
 		v := int(math.Round(*cmd.Volume * 100))
 		v = min(max(v, 0), 100)
 		err = p.client.GeneralCommand(ctx, jfID, "SetVolume", map[string]string{"Volume": strconv.Itoa(v)})
+	case model.CmdPlayItems:
+		err = p.playItems(ctx, jfID, cmd)
+	case model.CmdQueueJump:
+		err = p.queueJump(ctx, sessionID, jfID, *cmd.Index)
 	default:
 		return model.Errorf(model.ErrUnsupported, "unknown command %q", cmd.Name)
 	}

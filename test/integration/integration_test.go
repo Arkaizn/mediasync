@@ -29,6 +29,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -208,7 +209,8 @@ func TestRealMPRISPlayerMPV(t *testing.T) {
 	c := startService(t, cfg, bus.Connect)
 
 	s := waitSession(t, c, "mpv via MPRIS", func(s model.Session) bool {
-		return s.Provider == "mpris" && s.Track.Title != nil && s.Playback.State == model.StatePlaying
+		// Wait until mpv has loaded the file (length known) before seeking.
+		return s.Provider == "mpris" && s.Track.Title != nil && s.Playback.State == model.StatePlaying && s.Track.DurationMS != nil
 	})
 	t.Logf("discovered %s: player=%q title=%q duration=%v caps=%v", s.ID, s.Player.Name, *s.Track.Title, s.Track.DurationMS, s.Capabilities)
 	if !strings.HasPrefix(s.ID, "mpris:mpv") || s.Origin != model.OriginLocal || !s.Controllable {
@@ -394,10 +396,17 @@ func newSimClient(t *testing.T, env jfEnv, client, device string, items []string
 func (s *simClient) state() map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return map[string]any{
+	st := map[string]any{
 		"ItemId": s.items[s.idx], "PositionTicks": s.posTicks, "IsPaused": s.paused, "CanSeek": true,
 		"VolumeLevel": s.volume, "PlayMethod": "DirectPlay", "PlaySessionId": s.deviceID,
 	}
+	// Report the upcoming tracks the way Finamp does ("Report queue to server").
+	queue := []map[string]any{}
+	for _, id := range s.items[s.idx+1:] {
+		queue = append(queue, map[string]any{"Id": id, "PlaylistItemId": "queue"})
+	}
+	st["NowPlayingQueue"] = queue
+	return st
 }
 
 func (s *simClient) report(path, event string) {
@@ -482,6 +491,34 @@ func (s *simClient) readLoop() {
 				s.report("/Sessions/Playing", "")
 			} else {
 				s.report("/Sessions/Playing/Progress", d.Command)
+			}
+		case "Play":
+			var d struct {
+				ItemIds     []string
+				PlayCommand string
+				StartIndex  int
+			}
+			_ = json.Unmarshal(m.Data, &d)
+			s.mu.Lock()
+			s.received = append(s.received, "Play:"+d.PlayCommand+":"+strings.Join(d.ItemIds, ","))
+			newItem := false
+			switch d.PlayCommand {
+			case "PlayNow":
+				if len(d.ItemIds) > 0 && d.StartIndex < len(d.ItemIds) {
+					s.items, s.idx, s.posTicks = d.ItemIds, d.StartIndex, 0
+					newItem = true
+				}
+			case "PlayNext":
+				rest := append([]string{}, s.items[s.idx+1:]...)
+				s.items = append(append(append([]string{}, s.items[:s.idx+1]...), d.ItemIds...), rest...)
+			case "PlayLast":
+				s.items = append(s.items, d.ItemIds...)
+			}
+			s.mu.Unlock()
+			if newItem {
+				s.report("/Sessions/Playing", "")
+			} else {
+				s.report("/Sessions/Playing/Progress", "QueueChange")
 			}
 		case "GeneralCommand":
 			var d struct {
@@ -592,7 +629,13 @@ func TestRealJellyfin(t *testing.T) {
 	} else {
 		t.Logf("server version %s", *ps.Server.Version)
 	}
-	if vs.Controllable || len(vs.Capabilities) != 0 || vs.Kind != model.KindRemoteViewOnly {
+	hasControl := false
+	for _, c := range vs.Capabilities {
+		if slices.Contains(model.ControlCapabilities, c) {
+			hasControl = true
+		}
+	}
+	if vs.Controllable || hasControl || vs.Kind != model.KindRemoteViewOnly {
 		t.Errorf("view-only session %+v", vs)
 	}
 
@@ -657,5 +700,133 @@ func TestRealJellyfin(t *testing.T) {
 	provs := rpc[map[string][]model.ProviderStatus](t, c, "providers.status", nil)["providers"]
 	if len(provs) != 1 || provs[0].State != model.ProviderUnauthenticated {
 		t.Errorf("after logout %+v", provs)
+	}
+}
+
+func audioItemsByName(t *testing.T, env jfEnv) map[string]string {
+	t.Helper()
+	probe := &simClient{t: t, env: env, client: "mediasync-it", device: "probe", deviceID: "mediasync-it-probe2"}
+	var auth struct{ AccessToken string }
+	if code := probe.do("POST", "/Users/AuthenticateByName", map[string]string{"Username": env.user, "Pw": env.password}, &auth); code != 200 {
+		t.Fatalf("auth: HTTP %d", code)
+	}
+	probe.token = auth.AccessToken
+	defer probe.do("POST", "/Sessions/Logout", nil, nil)
+	var res struct {
+		Items []struct{ Id, Name string }
+	}
+	probe.do("GET", "/Items?recursive=true&includeItemTypes=Audio", nil, &res)
+	out := map[string]string{}
+	for _, it := range res.Items {
+		out[it.Name] = it.Id
+	}
+	return out
+}
+
+// TestRealJellyfinQueueLyricsPlaylists needs the library created by
+// scripts/jellyfin-test-server.sh (Track 1 with .lrc, Track 2 with .txt
+// lyrics, playlist "Road Trip" = [Track 3, Track 1]).
+func TestRealJellyfinQueueLyricsPlaylists(t *testing.T) {
+	env := jellyfinEnv(t)
+	byName := audioItemsByName(t, env)
+	t1, t2, t3 := byName["Track 1"], byName["Track 2"], byName["Track 3"]
+	if t1 == "" || t2 == "" || t3 == "" {
+		t.Skip("needs the test library from scripts/jellyfin-test-server.sh (Track 1–3)")
+	}
+	cfg := config.Default()
+	cfg.Local.Enabled = false
+	cfg.Jellyfin.PollInterval = config.Duration(time.Second)
+	cfg.Jellyfin.Servers = []config.JellyfinServer{{Name: "it", URL: env.url}}
+	cfg.Commands.RemoteVerifyTimeout = config.Duration(8 * time.Second)
+	c := startService(t, cfg, nil)
+	login := rpc[map[string]any](t, c, "jellyfin.login", map[string]any{"server": "it", "username": env.user, "password": env.password})
+	version := fmt.Sprint(login["server_version"])
+	t.Logf("server version %s", version)
+
+	phone := newSimClient(t, env, "Finamp", "IT Phone Q", []string{t1, t2, t3}, true)
+	ps := waitSession(t, c, "phone", func(s model.Session) bool {
+		return s.Player.DeviceID != nil && *s.Player.DeviceID == phone.deviceID && s.Controllable
+	})
+	t.Logf("phone capabilities: %v", ps.Capabilities)
+
+	// Queue: exposed by Jellyfin 10.10, not by 12.x during playback.
+	q := rpc[model.Queue](t, c, "sessions.queue", map[string]any{"session_id": ps.ID})
+	b, _ := json.Marshal(q)
+	t.Logf("sessions.queue: %s", b)
+	if strings.HasPrefix(version, "10.") {
+		ps = waitSession(t, c, "queue capability", func(s model.Session) bool { return s.ID == ps.ID && s.Has(model.CapQueue) })
+		q = rpc[model.Queue](t, c, "sessions.queue", map[string]any{"session_id": ps.ID})
+		if !q.Available || len(q.Items) != 3 || q.CurrentIndex == nil || *q.CurrentIndex != 0 || q.Items[2].ItemID != t3 || q.Items[1].Title == nil {
+			t.Errorf("10.10 queue %+v", q)
+		}
+	} else if q.Available || ps.Has(model.CapQueue) || ps.Has(model.CapQueueJump) {
+		t.Errorf("Jellyfin %s exposed a queue during playback: %+v caps %v", version, q, ps.Capabilities)
+	}
+
+	// Lyrics from the .lrc file.
+	if !ps.Has(model.CapLyrics) {
+		t.Errorf("Track 1 has lyrics but no lyrics capability: %v", ps.Capabilities)
+	}
+	l := rpc[model.Lyrics](t, c, "lyrics.get", map[string]any{"session_id": ps.ID})
+	if l.Status != "ok" || !l.Synced || len(l.Lines) != 3 || l.Lines[0].Text != "First line of track one" || *l.Lines[1].StartMS != 5500 {
+		t.Errorf("synced lyrics %+v", l)
+	}
+
+	// Playlists.
+	pls := rpc[map[string][]model.Playlist](t, c, "library.playlists", map[string]any{"server": "it"})["playlists"]
+	var road *model.Playlist
+	for i := range pls {
+		if pls[i].Name == "Road Trip" {
+			road = &pls[i]
+		}
+	}
+	if road == nil || road.ItemCount == nil || *road.ItemCount != 2 {
+		t.Fatalf("playlists %+v", pls)
+	}
+
+	// Play the playlist: the phone receives it in playlist order.
+	r := command(t, c, ps.ID, map[string]any{"command": "play_items", "item_ids": []string{road.ID}})
+	if r.Outcome != model.OutcomeVerified {
+		t.Errorf("play_items: %+v", r)
+	}
+	if got := phone.Received(); len(got) == 0 || got[len(got)-1] != "Play:PlayNow:"+t3+","+t1 {
+		t.Errorf("phone received %v", got)
+	}
+	// Unsynced lyrics (Track 2 .txt) and no lyrics (Track 3).
+	r = command(t, c, ps.ID, map[string]any{"command": "play_items", "item_ids": []string{t2}})
+	if r.Outcome != model.OutcomeVerified {
+		t.Errorf("play_items track: %+v", r)
+	}
+	l = rpc[model.Lyrics](t, c, "lyrics.get", map[string]any{"session_id": ps.ID})
+	if l.Status != "ok" || l.Synced || len(l.Lines) != 2 || l.Lines[0].StartMS != nil || l.Lines[1].Text != "Plain line two" {
+		t.Errorf("plain lyrics %+v", l)
+	}
+	r = command(t, c, ps.ID, map[string]any{"command": "play_items", "item_ids": []string{t3}})
+	if r.Outcome != model.OutcomeVerified {
+		t.Errorf("play_items t3: %+v", r)
+	}
+	if l = rpc[model.Lyrics](t, c, "lyrics.get", map[string]any{"session_id": ps.ID}); l.Status != "none" {
+		t.Errorf("no lyrics %+v", l)
+	}
+	r = command(t, c, ps.ID, map[string]any{"command": "play_items", "item_ids": []string{t1}, "mode": "last"})
+	if got := phone.Received(); got[len(got)-1] != "Play:PlayLast:"+t1 {
+		t.Errorf("play last: %v (%+v)", got, r)
+	}
+	// Unknown ids are refused before anything is sent.
+	n := len(phone.Received())
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	err := c.Call(ctx, "player.command", map[string]any{"session_id": ps.ID, "command": "play_items", "item_ids": []string{"ffffffffffffffffffffffffffffffff"}}, nil)
+	cancel()
+	if ce, ok := err.(*client.Error); !ok || ce.Code != "invalid_argument" || len(phone.Received()) != n {
+		t.Errorf("unknown id: %v", err)
+	}
+
+	// queue_jump where the server exposes the queue.
+	if strings.HasPrefix(version, "10.") {
+		ps = waitSession(t, c, "queue_jump", func(s model.Session) bool { return s.ID == ps.ID && s.Has(model.CapQueueJump) })
+		r = command(t, c, ps.ID, map[string]any{"command": "queue_jump", "index": 1})
+		if r.Outcome != model.OutcomeVerified {
+			t.Errorf("queue_jump: %+v", r)
+		}
 	}
 }
