@@ -59,7 +59,15 @@ and method calls go through the actual daemon. Tests that need
 | Reload keeps running on invalid config | `TestReloadKeepsRunningOnInvalidConfig` |
 | Secret Service unavailable; explicit file fallback | `TestCredentialStoreUnavailable` |
 
-Not covered automatically: rejection of connections from *another UID*
+| Queue (10.10 vs 12.2 behaviour), queue layout, lyrics (synced/unsynced/none/unknown, cached), playlists, play_items (playlist order, unknown ids, audio gating), queue_jump | `provider/jellyfin` `TestQueueOnJellyfin1010AndUnavailableOn122`, `TestQueueLayoutWebStyle`, `TestLyricsFromJellyfin`, `TestPlaylistsAndPlayItems`, `TestPlayItemsGatedOnPlayableAudio`, `TestQueueJump` |
+| MPRIS lyrics from `xesam:asText` | `provider/mpris` `TestLyricsFromMetadata` |
+| LRC parsing, LRCLIB client | `lyrics` |
+| Linked local session borrows queue/lyrics and routes queue commands; `queue.changed` without `session.updated`; view-only read caps; lyrics source order and fallback | `engine` `TestLinkedLocalBorrowsQueueLyricsAndRoutesCommands`, `TestQueueChangedEvents`, `TestViewOnlyKeepsReadOnlyCapabilities`, `TestLyricsSourcesInOrder` |
+| New API end to end over the socket | `daemon` `TestEndToEndQueueLyricsPlaylists`, `TestQueueUnavailableOnJellyfin122` |
+
+Not covered automatically: LRCLIB against the real service (blocked in the
+development environment; tested against a local mock implementing its
+documented API), rejection of connections from *another UID*
 (the check is implemented with `SO_PEERCRED` but needs a second user
 account to test), and real desktop keyrings (GNOME Keyring/KWallet). The
 Secret Service client is tested against a protocol-level fake.
@@ -88,6 +96,11 @@ MEDIASYNC_IT_SESSION_BUS=1 go test -tags integration -v -run TestRealSessionBus 
   with two generated tones and drives it through the full daemon over IPC:
   discovery, metadata, capabilities, verified pause/play/seek
   (absolute and relative)/volume/next, and removal when mpv exits.
+- `TestRealJellyfinQueueLyricsPlaylists` checks queue availability per
+  server version (12.x: none; 10.10: full queue and `queue_jump`), synced
+  and plain lyrics from `.lrc`/`.txt` files, playlists, `play_items` in
+  playlist order, and refusal of unknown ids. Run it against both versions:
+  `JELLYFIN_IMAGE=jellyfin/jellyfin:10.10.7 scripts/jellyfin-test-server.sh start`.
 - `TestRealJellyfin` logs in through the daemon. It simulates a phone app
   that opens the real WebSocket control channel and applies commands, plus
   a view-only browser client. It checks classification, metadata,
@@ -100,13 +113,15 @@ test -v` shows `SKIP` lines.
 
 ## Results of the last full run
 
-Recorded for the initial release (Linux, Go 1.24.7, dbus-daemon 1.14,
-mpv 0.37 + mpv-mpris 0.7.1, Jellyfin 12.2.0 in Docker):
+Queue/lyrics/playlist release (Linux, Go 1.24.7, dbus-daemon 1.14,
+mpv 0.37 + mpv-mpris 0.7.1):
 
 - `go test -race ./...`: all packages pass.
-- `go test -tags integration ./test/integration/`: `TestRealMPRISPlayerMPV`
-  PASS, `TestRealJellyfin` PASS (against a fresh container provisioned by
-  `scripts/jellyfin-test-server.sh`), `TestRealSessionBusDiscovery` SKIP
-  (no desktop session in the test environment).
-- Feishin itself was **not** run: its MPRIS support is exercised through the
-  generic MPRIS path (fake player named `Feishin`, and real `mpv`).
+- `go test -tags integration ./test/integration/` against **Jellyfin
+  12.2.0** and **Jellyfin 10.10.7** (both provisioned by
+  `scripts/jellyfin-test-server.sh`): `TestRealMPRISPlayerMPV`,
+  `TestRealJellyfin` and `TestRealJellyfinQueueLyricsPlaylists` PASS on
+  both; `TestRealSessionBusDiscovery` SKIP (no desktop session).
+- Not run: LRCLIB (host blocked in the environment), Feishin itself, real
+  phone apps (simulated client using the same protocol, including the
+  WebSocket `Play` message).

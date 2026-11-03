@@ -31,6 +31,8 @@ type Options struct {
 	// SelectionGrace keeps an explicit selection for a session that vanished
 	// (e.g. a restarting player) for this long.
 	SelectionGrace time.Duration
+	// LyricsFallback, if set, is asked for lyrics no other source has.
+	LyricsFallback LyricsFallback
 	// SubscriberBuffer is the per-subscriber event queue size.
 	SubscriberBuffer int
 	// Now is the clock (tests).
@@ -266,7 +268,8 @@ func (e *Engine) upsert(pe *providerEntry, s model.Session) {
 	s.Origin = pe.p.Origin()
 	s.Capabilities = model.SortCapabilities(s.Capabilities)
 	if !s.Controllable {
-		s.Capabilities = []model.Capability{}
+		// View-only sessions keep read-only capabilities (queue, lyrics).
+		s.Capabilities = keepCaps(s.Capabilities, model.ReadOnlyCapabilities)
 	}
 	if s.Playback.State == "" {
 		s.Playback.State = model.StateUnknown
@@ -291,6 +294,21 @@ func (e *Engine) upsert(pe *providerEntry, s model.Session) {
 		pe.ids[s.ID] = true
 		e.recomputeLocked()
 		return
+	}
+	if old.raw.QueueRevision != s.QueueRevision {
+		rest := s.Clone()
+		rest.QueueRevision = old.raw.QueueRevision
+		if !meaningfulChange(&old.raw, &rest) {
+			// Only the queue changed: keep the session as consumers see it
+			// (no session.updated) and announce the queue change.
+			old.raw.QueueRevision = s.QueueRevision
+			old.raw.Playback.PositionMS = s.Playback.PositionMS
+			old.raw.Playback.PositionAt = s.Playback.PositionAt
+			old.raw.LastSeen = s.LastSeen
+			e.syncViewSilentLocked(s.ID, old.raw)
+			e.recomputeLocked()
+			return
+		}
 	}
 	if !meaningfulChange(&old.raw, &s) {
 		// Keep the fresher position sample and last-seen time silently.
@@ -387,6 +405,9 @@ func (e *Engine) touchLocked(id string) {
 // about. Position changes that agree with extrapolation (±1.5 s) and
 // LastSeen changes are not meaningful.
 func meaningfulChange(a, b *model.Session) bool {
+	if a.QueueRevision != b.QueueRevision {
+		return true
+	}
 	x, y := a.Clone(), b.Clone()
 	ap, bp := x.Playback, y.Playback
 	x.LastSeen, y.LastSeen = time.Time{}, time.Time{}
@@ -422,6 +443,7 @@ func (e *Engine) recomputeLocked() {
 		all = append(all, &s)
 	}
 	dup := applyDedup(e.settings, e.opts.Host, all)
+	e.augmentMediaLocked(all)
 	for _, s := range all {
 		s.Kind = s.ComputeKind()
 		s.Hidden = string(e.settings.hiddenReason(s))
@@ -473,6 +495,15 @@ func (e *Engine) recomputeLocked() {
 			e.emitLocked(Event{Type: EventSessionAdded, SessionID: id, Session: model.Ptr(nv)})
 		case !sessionsEqual(&old, &nv):
 			e.emitLocked(Event{Type: EventSessionUpdated, SessionID: id, Session: model.Ptr(nv)})
+		}
+	}
+	// Queue changes (including a local player gaining or losing the queue of
+	// its linked remote session) are announced separately: clients re-fetch
+	// sessions.queue. They do not produce session.updated on their own.
+	for _, id := range ids {
+		nv := newView[id]
+		if old, existed := e.view[id]; existed && old.QueueRevision != nv.QueueRevision {
+			e.emitLocked(Event{Type: EventQueueChanged, SessionID: id})
 		}
 	}
 	e.view = newView

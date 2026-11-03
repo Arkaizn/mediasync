@@ -17,6 +17,7 @@ import (
 	"github.com/arkaizn/mediasync/internal/config"
 	"github.com/arkaizn/mediasync/internal/engine"
 	"github.com/arkaizn/mediasync/internal/ipc"
+	"github.com/arkaizn/mediasync/internal/lyrics"
 	"github.com/arkaizn/mediasync/internal/model"
 	"github.com/arkaizn/mediasync/internal/provider/jellyfin"
 	"github.com/arkaizn/mediasync/internal/provider/mpris"
@@ -84,7 +85,13 @@ func New(opts Options) (*Service, error) {
 		st.Overrides = config.Overrides{}
 		settings, localEnabled, remoteEnabled = opts.Config.EngineSettings(), opts.Config.Local.Enabled, opts.Config.Remote.Enabled
 	}
+	var fallback engine.LyricsFallback
+	if opts.Config.Lyrics.LRCLIB {
+		fallback = lrclibFallback{lyrics.NewLRCLIB(opts.Config.Lyrics.LRCLIBURL, opts.Version)}
+		opts.Logger.Info("LRCLIB lyrics fallback enabled: track metadata is sent to the LRCLIB server")
+	}
 	eng := engine.New(engine.Options{
+		LyricsFallback:      fallback,
 		Settings:            settings,
 		Host:                host,
 		Logger:              opts.Logger,
@@ -373,4 +380,21 @@ func (s *Service) diagnostics(ctx context.Context) map[string]any {
 			"sys_kib":        mem.Sys / 1024,
 		},
 	}
+}
+
+// lrclibFallback adapts the LRCLIB client to the engine.
+type lrclibFallback struct{ c *lyrics.LRCLIB }
+
+func (f lrclibFallback) Lookup(ctx context.Context, t model.Track) ([]model.LyricLine, bool, bool, error) {
+	if t.Title == nil || len(t.Artists) == 0 {
+		return nil, false, false, nil
+	}
+	info := lyrics.TrackInfo{Artist: t.Artists[0], Title: *t.Title}
+	if t.Album != nil {
+		info.Album = *t.Album
+	}
+	if t.DurationMS != nil {
+		info.DurationMS = *t.DurationMS
+	}
+	return f.c.Get(ctx, info)
 }

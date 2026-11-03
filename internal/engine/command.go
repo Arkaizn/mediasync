@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	"github.com/arkaizn/mediasync/internal/model"
@@ -57,9 +58,43 @@ func (e *Engine) Command(ctx context.Context, sessionID string, cmd model.Comman
 			WithData("capabilities", before.Capabilities)
 	}
 
+	// Queue commands for a local player whose queue comes from its linked
+	// remote session (e.g. Feishin and its own Jellyfin session) are carried
+	// out through that session. Nothing else is ever redirected.
+	target, targetProv, targetBefore := sessionID, prov, before
+	if cmd.Name == model.CmdQueueJump || cmd.Name == model.CmdPlayItems {
+		if rid, rp, rv, ok := e.viaLinked(sessionID, capab); ok {
+			target, targetProv, targetBefore = rid, rp, rv
+		}
+	}
+	var pred predicate
+	if cmd.Name == model.CmdQueueJump {
+		qs, ok := targetProv.(provider.QueueSource)
+		if !ok {
+			return model.CommandResult{}, model.Errorf(model.ErrUnsupported, "session %q has no queue", sessionID)
+		}
+		q, err := qs.Queue(ctx, target)
+		if err != nil {
+			return model.CommandResult{}, err
+		}
+		if !q.Available {
+			return model.CommandResult{}, model.Errorf(model.ErrUnsupported, "the queue of session %q is not available", sessionID)
+		}
+		if *cmd.Index >= len(q.Items) {
+			return model.CommandResult{}, model.Errorf(model.ErrInvalidArgument, "index %d is outside the queue (%d items)", *cmd.Index, len(q.Items))
+		}
+		want := q.Items[*cmd.Index].ItemID
+		pred = func(s *model.Session, _ time.Time) bool {
+			return s != nil && s.Track.TrackID != nil && strings.EqualFold(*s.Track.TrackID, want)
+		}
+	}
+
 	start := e.opts.Now()
+	if pred == nil {
+		pred = expectation(targetBefore, cmd, start)
+	}
 	dctx, cancel := context.WithTimeout(ctx, e.opts.CommandTimeout)
-	err := prov.Command(dctx, sessionID, cmd)
+	err := targetProv.Command(dctx, target, cmd)
 	cancel()
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) && model.CodeOf(err) == model.ErrInternal {
@@ -72,16 +107,24 @@ func (e *Engine) Command(ctx context.Context, sessionID string, cmd model.Comman
 	// The user acted on this session: it becomes the most recently active.
 	e.mu.Lock()
 	e.touchLocked(sessionID)
+	if target != sessionID {
+		e.touchLocked(target)
+	}
 	e.recomputeLocked()
 	e.mu.Unlock()
 
 	verify := e.opts.VerifyTimeout
-	if before.Origin == model.OriginRemote {
+	if targetBefore.Origin == model.OriginRemote {
 		verify = e.opts.RemoteVerifyTimeout
 	}
-	pred := expectation(before, cmd, start)
-	after, verified := e.waitFor(ctx, sessionID, prov, verify, pred)
+	after, verified := e.waitFor(ctx, target, targetProv, verify, pred)
 	res := model.CommandResult{SessionID: sessionID, Command: cmd.Name, Session: after}
+	if target != sessionID {
+		res.ViaSessionID = target
+		if s, ok := e.Session(sessionID); ok {
+			res.Session = &s
+		}
+	}
 	if verified {
 		res.Outcome = model.OutcomeVerified
 	} else {
@@ -165,6 +208,35 @@ func expectation(before model.Session, cmd model.Command, issued time.Time) pred
 			}
 			p := s.Playback.CurrentPosition(now)
 			return p != nil && math.Abs(float64(*p-target)) <= 2000
+		}
+	case model.CmdPlayItems:
+		if cmd.PlayMode() != model.PlayModeNow {
+			// Adding to the queue is only observable through the queue.
+			beforeRev := before.QueueRevision
+			return func(s *model.Session, _ time.Time) bool {
+				return s != nil && s.QueueRevision != beforeRev
+			}
+		}
+		beforeRev := before.QueueRevision
+		return func(s *model.Session, now time.Time) bool {
+			if s == nil {
+				return false
+			}
+			if trackKey(s) != beforeKey {
+				return true
+			}
+			// The queue was replaced (e.g. the first new item is the one
+			// already playing).
+			if s.QueueRevision != beforeRev {
+				return true
+			}
+			// The same track was started again.
+			if beforePos != nil && *beforePos > 3000 {
+				if p := s.Playback.CurrentPosition(now); p != nil && *p < 3000 {
+					return true
+				}
+			}
+			return false
 		}
 	case model.CmdSetVolume:
 		want := *cmd.Volume

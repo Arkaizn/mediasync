@@ -106,3 +106,21 @@ func (r *Registry) Kinds() []string {
 	sort.Strings(out)
 	return out
 }
+
+// QueueSource is implemented by providers that can report a session's queue.
+type QueueSource interface {
+	Queue(ctx context.Context, sessionID string) (model.Queue, error)
+}
+
+// LyricsSource is implemented by providers that can return lyrics for the
+// current track of one of their sessions.
+type LyricsSource interface {
+	Lyrics(ctx context.Context, sessionID string) (model.Lyrics, error)
+}
+
+// ItemLyricsSource is implemented by media-server providers that can look up
+// lyrics for an item id from their library. known is false when the item is
+// not in this provider's library (another server may know it).
+type ItemLyricsSource interface {
+	ItemLyrics(ctx context.Context, itemID string) (lyrics model.Lyrics, known bool, err error)
+}

@@ -143,7 +143,9 @@ func TestUnauthenticatedThenLoginDiscoversSessions(t *testing.T) {
 	if s.Playback.State != model.StatePlaying || *s.Playback.Volume != 0.7 || *s.Playback.PositionMS < 10_000 {
 		t.Errorf("playback %+v", s.Playback)
 	}
-	if !slices.Equal(s.Capabilities, model.AllCapabilities) {
+	wantCaps := []model.Capability{model.CapPlay, model.CapPause, model.CapPlayPause, model.CapStop, model.CapNext,
+		model.CapPrevious, model.CapSeek, model.CapVolume, model.CapPlayItems}
+	if !slices.Equal(s.Capabilities, wantCaps) {
 		t.Errorf("caps %v", s.Capabilities)
 	}
 
@@ -559,5 +561,270 @@ func TestCheckDiagnosesRemoteControl(t *testing.T) {
 		if strings.Contains(r, tok.Reveal()) {
 			t.Fatalf("token in URL: %s", r)
 		}
+	}
+}
+
+func TestCheckDetectsSplitSession(t *testing.T) {
+	e := newEnv(t, nil)
+	alice := e.srv.UserID("alice")
+	// Playing session that announced Play On but has no control connection…
+	e.srv.AddClient(&fakejellyfin.Client{
+		UserID: alice, Client: "Finamp", DeviceName: "iPhone", DeviceID: "new-id",
+		SupportedCommands: []string{"SetVolume", "PlayState"}, ItemID: "x", Title: "Song", RunTimeTicks: 1_000_000_000,
+	})
+	// …and the idle session its control connection was attached to.
+	e.srv.AddClient(&fakejellyfin.Client{UserID: alice, Client: "Finamp", DeviceName: "iPhone", DeviceID: "old-id"})
+	// An unrelated view-only browser must not get the hint.
+	e.srv.AddClient(&fakejellyfin.Client{
+		UserID: alice, Client: "Jellyfin Web", DeviceName: "Firefox", DeviceID: "web",
+		SupportedCommands: []string{"SetVolume"}, ItemID: "y", Title: "Other", RunTimeTicks: 1_000_000_000,
+	})
+	e.login(t)
+	res := e.prov.Check(context.Background())
+	hinted := 0
+	for _, c := range res.Clients {
+		if strings.Contains(c.Explanation, "log out of the app and log in again") {
+			hinted++
+			if c.Client != "Finamp" || c.NowPlaying == nil {
+				t.Errorf("wrong session hinted: %+v", c)
+			}
+		}
+	}
+	if hinted != 1 {
+		t.Errorf("want exactly one split-session hint, got %d: %+v", hinted, res.Clients)
+	}
+}
+
+// library adds a small library: three tracks (one with synced, one with
+// unsynced lyrics), an album and a playlist [T3, T1].
+func library(srv *fakejellyfin.Server) {
+	start := func(v int64) *int64 { return &v }
+	srv.AddItem(fakejellyfin.Item{ID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", Name: "Track 1", Type: "Audio", Album: "Album X", AlbumID: "album0000000000000000000000000001",
+		Artists: []string{"Artist A"}, RunTimeTicks: 1_800_000_000, ImageTag: "img1",
+		Lyrics: []fakejellyfin.LyricLine{{Text: "First", StartTicks: start(10_000_000)}, {Text: "Second", StartTicks: start(55_000_000)}}})
+	srv.AddItem(fakejellyfin.Item{ID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2", Name: "Track 2", Type: "Audio", Album: "Album X", Artists: []string{"Artist A"},
+		RunTimeTicks: 1_200_000_000, Lyrics: []fakejellyfin.LyricLine{{Text: "Plain one"}, {Text: "Plain two"}, {Text: ""}}})
+	srv.AddItem(fakejellyfin.Item{ID: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3", Name: "Track 3", Type: "Audio", Album: "Album X", Artists: []string{"Artist A"}, RunTimeTicks: 900_000_000})
+	srv.AddItem(fakejellyfin.Item{ID: "album0000000000000000000000000001", Name: "Album X", Type: "MusicAlbum", ImageTag: "albumimg",
+		Children: []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3"}})
+	srv.AddItem(fakejellyfin.Item{ID: "plist000000000000000000000000001", Name: "Road Trip", Type: "Playlist",
+		Children: []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"}})
+}
+
+const (
+	t1 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1"
+	t2 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2"
+	t3 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3"
+	pl = "plist000000000000000000000000001"
+	al = "album0000000000000000000000000001"
+)
+
+func queuePhone(srv *fakejellyfin.Server) *fakejellyfin.Client {
+	return srv.AddClient(&fakejellyfin.Client{
+		UserID: srv.UserID("alice"), UserName: "alice", Client: "Finamp", DeviceName: "iPhone", DeviceID: "iphone-q",
+		Controllable: true, ApplyCommands: true, ItemID: t1, Title: "Track 1", Artists: []string{"Artist A"}, RunTimeTicks: 1_800_000_000,
+		// Finamp reports only upcoming tracks.
+		Queue: []fakejellyfin.QueueEntry{{ID: t2, PlaylistItemID: "nextUp"}, {ID: t3, PlaylistItemID: "queue"}},
+	})
+}
+
+func TestQueueOnJellyfin1010AndUnavailableOn122(t *testing.T) {
+	e := newEnv(t, nil)
+	library(e.srv)
+	queuePhone(e.srv)
+	e.login(t)
+	e.run(t)
+	ctx := context.Background()
+
+	// Jellyfin 12.2 behaviour (default): no queue during playback.
+	s := e.sessionFor(t, "iphone-q", "Finamp", nil)
+	if s.Has(model.CapQueue) || s.Has(model.CapQueueJump) {
+		t.Errorf("12.2 must not advertise queue: %v", s.Capabilities)
+	}
+	q, err := e.prov.Queue(ctx, s.ID)
+	if err != nil || q.Available || len(q.Items) != 0 || q.CurrentIndex != nil || q.Source != nil {
+		t.Fatalf("12.2 queue: %+v %v", q, err)
+	}
+
+	// Jellyfin 10.10 behaviour: the queue is exposed.
+	e.srv.SetStoreQueue(true)
+	s = e.sessionFor(t, "iphone-q", "Finamp", func(x model.Session) bool { return x.Has(model.CapQueue) })
+	if !s.Has(model.CapQueueJump) || s.QueueRevision == "" {
+		t.Errorf("caps %v rev %q", s.Capabilities, s.QueueRevision)
+	}
+	q, err = e.prov.Queue(ctx, s.ID)
+	if err != nil || !q.Available || *q.Source != "jellyfin" || q.CurrentIndex == nil || *q.CurrentIndex != 0 || len(q.Items) != 3 {
+		t.Fatalf("queue: %+v %v", q, err)
+	}
+	// The current track is put in front of Finamp's upcoming-only list.
+	if q.Items[0].ItemID != t1 || q.Items[1].ItemID != t2 || q.Items[2].ItemID != t3 || q.Items[2].Index != 2 {
+		t.Errorf("order %+v", q.Items)
+	}
+	it := q.Items[0]
+	if it.Title == nil || it.Album == nil || it.DurationMS == nil || len(it.Artists) == 0 {
+		t.Fatalf("missing metadata %+v", it)
+	}
+	if *it.Title != "Track 1" || it.Artists[0] != "Artist A" || *it.Album != "Album X" || *it.DurationMS != 180_000 ||
+		it.ArtworkURL == nil || !strings.Contains(*it.ArtworkURL, "/Items/"+t1+"/Images/Primary?tag=img1") {
+		t.Errorf("item metadata %+v", it)
+	}
+	if q.Items[2].ArtworkURL != nil {
+		t.Errorf("no artwork must stay null: %v", *q.Items[2].ArtworkURL)
+	}
+}
+
+func TestQueueLayoutWebStyle(t *testing.T) {
+	si := SessionInfo{NowPlayingItem: &BaseItem{ID: t2}, PlaylistItemID: "p2",
+		NowPlayingQueue: []QueueEntry{{t1, "p1"}, {t2, "p2"}, {t3, "p3"}}}
+	ids, cur := queueLayout(si)
+	if cur != 1 || len(ids) != 3 {
+		t.Errorf("web style: %v %d", ids, cur)
+	}
+	// Queue that starts with the current item.
+	si = SessionInfo{NowPlayingItem: &BaseItem{ID: t1}, NowPlayingQueue: []QueueEntry{{t1, ""}, {t2, ""}}}
+	if ids, cur := queueLayout(si); cur != 0 || len(ids) != 2 {
+		t.Errorf("leading current: %v %d", ids, cur)
+	}
+}
+
+func TestLyricsFromJellyfin(t *testing.T) {
+	e := newEnv(t, nil)
+	library(e.srv)
+	ph := queuePhone(e.srv)
+	e.login(t)
+	e.run(t)
+	ctx := context.Background()
+	s := e.sessionFor(t, "iphone-q", "Finamp", nil)
+	if !s.Has(model.CapLyrics) {
+		t.Fatalf("HasLyrics must give the lyrics capability: %v", s.Capabilities)
+	}
+	l, err := e.prov.Lyrics(ctx, s.ID)
+	if err != nil || l.Status != model.LyricsOK || !l.Synced || len(l.Lines) != 2 || *l.Lines[1].StartMS != 5500 || *l.Source != "jellyfin" {
+		t.Fatalf("synced lyrics: %+v %v", l, err)
+	}
+	// Unsynced lyrics; trailing empty line dropped.
+	e.srv.Update(ph.SessionID, func(c *fakejellyfin.Client) { c.ItemID, c.Title = t2, "Track 2" })
+	e.sessionFor(t, "iphone-q", "Finamp", func(x model.Session) bool { return *x.Track.TrackID == t2 })
+	l, _ = e.prov.Lyrics(ctx, s.ID)
+	if l.Status != model.LyricsOK || l.Synced || len(l.Lines) != 2 || l.Lines[0].StartMS != nil {
+		t.Fatalf("unsynced lyrics: %+v", l)
+	}
+	// No lyrics: status none, capability gone.
+	e.srv.Update(ph.SessionID, func(c *fakejellyfin.Client) { c.ItemID, c.Title = t3, "Track 3" })
+	s = e.sessionFor(t, "iphone-q", "Finamp", func(x model.Session) bool { return *x.Track.TrackID == t3 })
+	if s.Has(model.CapLyrics) {
+		t.Error("lyrics capability without lyrics")
+	}
+	if l, _ := e.prov.Lyrics(ctx, s.ID); l.Status != model.LyricsNone || len(l.Lines) != 0 {
+		t.Errorf("none: %+v", l)
+	}
+	// Item lookup: unknown items are reported as unknown, not as "none".
+	if _, known, err := e.prov.ItemLyrics(ctx, "ffffffffffffffffffffffffffffffff"); known || err != nil {
+		t.Errorf("unknown item: %v %v", known, err)
+	}
+	// Cached: one lyrics request per item.
+	n := 0
+	for _, r := range e.srv.Requests() {
+		if strings.Contains(r, "/Audio/"+t1+"/Lyrics") {
+			n++
+		}
+	}
+	_, _, _ = e.prov.ItemLyrics(ctx, t1)
+	m := 0
+	for _, r := range e.srv.Requests() {
+		if strings.Contains(r, "/Audio/"+t1+"/Lyrics") {
+			m++
+		}
+	}
+	if n != 1 || m != 1 {
+		t.Errorf("lyrics fetched %d then %d times; want cached", n, m)
+	}
+}
+
+func TestPlaylistsAndPlayItems(t *testing.T) {
+	e := newEnv(t, nil)
+	library(e.srv)
+	ph := queuePhone(e.srv)
+	e.login(t)
+	e.run(t)
+	ctx := context.Background()
+
+	pls, err := e.prov.Playlists(ctx)
+	if err != nil || len(pls) != 1 || pls[0].ID != pl || pls[0].Name != "Road Trip" || *pls[0].ItemCount != 2 || pls[0].Server != "home" {
+		t.Fatalf("playlists %+v %v", pls, err)
+	}
+	s := e.sessionFor(t, "iphone-q", "Finamp", nil)
+	if !s.Has(model.CapPlayItems) {
+		t.Fatalf("caps %v", s.Capabilities)
+	}
+	// Playlists are expanded by mediasync in playlist order (the server
+	// would reorder them).
+	if err := e.prov.Command(ctx, s.ID, model.Command{Name: model.CmdPlayItems, ItemIDs: []string{pl}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.srv.ClientState(ph.SessionID).Received; got[len(got)-1] != "Play(PlayNow:"+t3+","+t1+"@0)" {
+		t.Errorf("playlist order lost: %v", got)
+	}
+	// Albums are passed to the server as they are; modes map to commands.
+	if err := e.prov.Command(ctx, s.ID, model.Command{Name: model.CmdPlayItems, ItemIDs: []string{al}, Mode: "next"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := e.srv.ClientState(ph.SessionID).Received; !strings.HasPrefix(got[len(got)-1], "Play(PlayNext:"+t1+","+t2+","+t3) {
+		t.Errorf("album next: %v", got)
+	}
+	if err := e.prov.Command(ctx, s.ID, model.Command{Name: model.CmdPlayItems, ItemIDs: []string{t2}, Mode: "last"}); err != nil {
+		t.Fatal(err)
+	}
+	// Unknown ids are rejected before anything is sent.
+	before := len(e.srv.ClientState(ph.SessionID).Received)
+	err = e.prov.Command(ctx, s.ID, model.Command{Name: model.CmdPlayItems, ItemIDs: []string{"ffffffffffffffffffffffffffffffff"}})
+	if model.CodeOf(err) != model.ErrInvalidArgument || len(e.srv.ClientState(ph.SessionID).Received) != before {
+		t.Errorf("unknown id: %v", err)
+	}
+}
+
+func TestPlayItemsGatedOnPlayableAudio(t *testing.T) {
+	e := newEnv(t, nil)
+	library(e.srv)
+	e.srv.AddClient(&fakejellyfin.Client{
+		UserID: e.srv.UserID("alice"), Client: "Swiftfin", DeviceName: "iPad", DeviceID: "video-only",
+		Controllable: true, PlayableTypes: []string{"Video"}, ItemID: t1, Title: "Track 1", RunTimeTicks: 1_000_000_000,
+	})
+	e.login(t)
+	e.run(t)
+	s := e.sessionFor(t, "video-only", "Swiftfin", nil)
+	if s.Has(model.CapPlayItems) || s.Has(model.CapQueueJump) {
+		t.Errorf("video-only client must not get play_items: %v", s.Capabilities)
+	}
+	err := e.prov.Command(context.Background(), s.ID, model.Command{Name: model.CmdPlayItems, ItemIDs: []string{t1}})
+	if model.CodeOf(err) != model.ErrUnsupported {
+		t.Errorf("want unsupported, got %v", err)
+	}
+}
+
+func TestQueueJump(t *testing.T) {
+	e := newEnv(t, nil)
+	e.srv.SetStoreQueue(true)
+	library(e.srv)
+	ph := queuePhone(e.srv)
+	e.login(t)
+	e.run(t)
+	s := e.sessionFor(t, "iphone-q", "Finamp", func(x model.Session) bool { return x.Has(model.CapQueueJump) })
+	ctx := context.Background()
+	if err := e.prov.Command(ctx, s.ID, model.Command{Name: model.CmdQueueJump, Index: model.Ptr(9)}); model.CodeOf(err) != model.ErrInvalidArgument {
+		t.Errorf("out of range: %v", err)
+	}
+	if err := e.prov.Command(ctx, s.ID, model.Command{Name: model.CmdQueueJump, Index: model.Ptr(2)}); err != nil {
+		t.Fatal(err)
+	}
+	// The queue is resent with PlayNow and the start index.
+	got := e.srv.ClientState(ph.SessionID).Received
+	if got[len(got)-1] != "Play(PlayNow:"+t1+","+t2+","+t3+"@2)" {
+		t.Errorf("jump: %v", got)
+	}
+	// The last item is now playing; nothing is left to jump to.
+	s = e.sessionFor(t, "iphone-q", "Finamp", func(x model.Session) bool { return *x.Track.TrackID == t3 })
+	if s.Has(model.CapQueueJump) {
+		t.Errorf("empty queue still advertises queue_jump: %v", s.Capabilities)
 	}
 }

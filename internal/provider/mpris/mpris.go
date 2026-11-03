@@ -21,6 +21,7 @@ import (
 	"github.com/godbus/dbus/v5"
 	"github.com/godbus/dbus/v5/introspect"
 
+	"github.com/arkaizn/mediasync/internal/lyrics"
 	"github.com/arkaizn/mediasync/internal/model"
 	"github.com/arkaizn/mediasync/internal/provider"
 )
@@ -744,6 +745,10 @@ func (p *Provider) buildSession(pl *player) model.Session {
 	} else {
 		s.Capabilities = []model.Capability{}
 	}
+	// Players such as Feishin publish the current lyrics (LRC or plain text).
+	if lyricsText(props) != "" {
+		s.Capabilities = model.SortCapabilities(append(s.Capabilities, model.CapLyrics))
+	}
 	if pl.loadErr != nil {
 		s.Error = &model.ErrorInfo{Code: model.ErrProviderError, Message: "player did not answer property queries", At: pl.lastSeen}
 	}
@@ -870,4 +875,58 @@ func removeStr(xs []string, s string) []string {
 		}
 	}
 	return out
+}
+
+// lyricsText returns the xesam:asText metadata entry, if any.
+func lyricsText(props map[string]dbus.Variant) string {
+	md, ok := props["Metadata"]
+	if !ok {
+		return ""
+	}
+	m, ok := md.Value().(map[string]dbus.Variant)
+	if !ok {
+		return ""
+	}
+	if v, ok := m["xesam:asText"]; ok {
+		if str, ok := variantString(v); ok {
+			return strings.TrimSpace(str)
+		}
+	}
+	return ""
+}
+
+// Lyrics implements provider.LyricsSource from the lyrics the player
+// publishes in its MPRIS metadata (xesam:asText). Feishin publishes LRC
+// (with timestamps when the lyrics are synced).
+func (p *Provider) Lyrics(_ context.Context, sessionID string) (model.Lyrics, error) {
+	p.mu.Lock()
+	var text string
+	var trackID *string
+	found := false
+	for _, pl := range p.players {
+		if pl.busName != "" && SessionID(pl.busName) == sessionID {
+			found = true
+			text = lyricsText(pl.props)
+			if md, ok := pl.props["Metadata"]; ok {
+				if m, ok := md.Value().(map[string]dbus.Variant); ok {
+					trackID = trackFromMetadata(m).TrackID
+				}
+			}
+			break
+		}
+	}
+	p.mu.Unlock()
+	if !found {
+		return model.Lyrics{}, model.Errorf(model.ErrSessionNotFound, "MPRIS session %q is not present", sessionID)
+	}
+	res := model.Lyrics{SessionID: sessionID, TrackID: trackID, Status: model.LyricsNone, Lines: []model.LyricLine{}}
+	if text == "" {
+		return res, nil
+	}
+	res.Lines, res.Synced = lyrics.ParseLRC(text)
+	if len(res.Lines) > 0 {
+		res.Status = model.LyricsOK
+		res.Source = model.Ptr(model.LyricsSourceMPRIS)
+	}
+	return res, nil
 }

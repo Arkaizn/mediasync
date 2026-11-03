@@ -58,7 +58,22 @@ type Client struct {
 	queue         []string
 	queueIdx      int
 
+	// PlayableTypes overrides the reported PlayableMediaTypes (default:
+	// ["Audio"] for controllable clients, [] otherwise).
+	PlayableTypes []string
+	// Queue is the queue the client reports (Finamp style: upcoming items
+	// only). The server only exposes it in StoreQueue mode (Jellyfin 10.10);
+	// Jellyfin 12.2 does not store it during playback (verified).
+	Queue          []QueueEntry
+	PlaylistItemID string
+
 	Received []string
+}
+
+// QueueEntry is a reported queue entry.
+type QueueEntry struct {
+	ID             string
+	PlaylistItemID string
 }
 
 // Server is the fake Jellyfin server.
@@ -83,7 +98,16 @@ type Server struct {
 	fail500 bool
 	// noWebSocket simulates a reverse proxy that does not forward upgrades.
 	noWebSocket bool
+	// StoreQueue emulates Jellyfin 10.10, which exposes NowPlayingQueue
+	// during playback. Off (default) emulates 12.2.
+	StoreQueue bool
+	items      map[string]*Item
+	itemOrder  []string
 }
+
+// SetStoreQueue switches between Jellyfin 10.10 (true: the queue is exposed
+// during playback) and 12.2 (false) behaviour.
+func (s *Server) SetStoreQueue(v bool) { s.mu.Lock(); s.StoreQueue = v; s.mu.Unlock() }
 
 // SetNoWebSocket makes /socket behave like a proxy without WebSocket support.
 func (s *Server) SetNoWebSocket(v bool) { s.mu.Lock(); s.noWebSocket = v; s.mu.Unlock() }
@@ -325,6 +349,12 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 		_, _ = buf.WriteString("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n")
 		_ = buf.Flush()
 		_ = conn.Close()
+	case path == "/Items" && r.Method == http.MethodGet:
+		s.itemsHandler(w, r)
+	case strings.HasPrefix(path, "/Playlists/") && strings.HasSuffix(path, "/Items") && r.Method == http.MethodGet:
+		s.playlistItems(w, strings.TrimSuffix(strings.TrimPrefix(path, "/Playlists/"), "/Items"))
+	case strings.HasPrefix(path, "/Audio/") && strings.HasSuffix(path, "/Lyrics") && r.Method == http.MethodGet:
+		s.lyricsHandler(w, strings.TrimSuffix(strings.TrimPrefix(path, "/Audio/"), "/Lyrics"))
 	case strings.HasPrefix(path, "/Sessions/") && r.Method == http.MethodPost:
 		s.command(w, r, strings.TrimPrefix(path, "/Sessions/"))
 	default:
@@ -339,6 +369,10 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request, rest string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	c, ok := s.clients[parts[0]]
+	if len(parts) == 2 && parts[1] == "Playing" {
+		s.play(w, r, c, ok)
+		return
+	}
 	if len(parts) >= 3 && parts[1] == "Playing" {
 		if !playstateCommands[parts[2]] {
 			w.WriteHeader(http.StatusBadRequest)
@@ -433,7 +467,8 @@ func (s *Server) sessionsJSON() []map[string]any {
 			"Client": c.Client, "DeviceName": c.DeviceName, "DeviceId": c.DeviceID,
 			"ApplicationVersion": c.AppVersion, "RemoteEndPoint": c.RemoteAddr, "ServerId": s.ServerID,
 			"IsActive": true, "SupportsMediaControl": c.Controllable, "SupportsRemoteControl": c.Controllable,
-			"SupportedCommands": cmds, "PlayableMediaTypes": []string{"Audio"},
+			"SupportedCommands": cmds, "PlayableMediaTypes": playable(c),
+			"NowPlayingQueue": s.queueJSON(c), "PlaylistItemId": c.PlaylistItemID,
 			"LastActivityDate":    c.LastCheckIn.Format(time.RFC3339Nano),
 			"LastPlaybackCheckIn": c.LastCheckIn.Format(time.RFC3339Nano),
 			"PlayState": map[string]any{
@@ -449,6 +484,14 @@ func (s *Server) sessionsJSON() []map[string]any {
 			}
 			if c.ImageTag != "" {
 				item["AlbumPrimaryImageTag"] = c.ImageTag
+			}
+			if it := s.items[c.ItemID]; it != nil {
+				// Like the real server: the full item.
+				item["HasLyrics"] = it.Lyrics != nil
+				item["Album"], item["AlbumId"] = it.Album, it.AlbumID
+				if it.ImageTag != "" {
+					item["ImageTags"] = map[string]string{"Primary": it.ImageTag}
+				}
 			}
 			sess["NowPlayingItem"] = item
 		}

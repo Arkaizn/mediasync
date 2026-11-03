@@ -6,7 +6,9 @@ After=dbus.socket
 Requires=dbus.socket
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=30
 ExecStart=@BINDIR@/mediasyncd
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure

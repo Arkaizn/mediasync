@@ -28,6 +28,70 @@ type Fake struct {
 	// EffectDelay delays the visible effect after the command returns.
 	EffectDelay time.Duration
 	refreshes   int
+
+	queues      map[string]model.Queue
+	lyrics      map[string]model.Lyrics // by session id
+	itemLyrics  map[string]model.Lyrics // by item id
+	LyricsCalls int
+}
+
+// SetQueue sets the queue reported for a session (QueueSource).
+func (f *Fake) SetQueue(id string, q model.Queue) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.queues == nil {
+		f.queues = map[string]model.Queue{}
+	}
+	f.queues[id] = q
+}
+
+// SetLyrics sets lyrics for a session's current track (LyricsSource).
+func (f *Fake) SetLyrics(id string, l model.Lyrics) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.lyrics == nil {
+		f.lyrics = map[string]model.Lyrics{}
+	}
+	f.lyrics[id] = l
+}
+
+// SetItemLyrics sets lyrics for a library item (ItemLyricsSource).
+func (f *Fake) SetItemLyrics(itemID string, l model.Lyrics) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.itemLyrics == nil {
+		f.itemLyrics = map[string]model.Lyrics{}
+	}
+	f.itemLyrics[itemID] = l
+}
+
+// Queue implements provider.QueueSource.
+func (f *Fake) Queue(_ context.Context, id string) (model.Queue, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if q, ok := f.queues[id]; ok {
+		return q, nil
+	}
+	return model.UnavailableQueue(id), nil
+}
+
+// Lyrics implements provider.LyricsSource.
+func (f *Fake) Lyrics(_ context.Context, id string) (model.Lyrics, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.LyricsCalls++
+	if l, ok := f.lyrics[id]; ok {
+		return l, nil
+	}
+	return model.Lyrics{SessionID: id, Status: model.LyricsNone, Lines: []model.LyricLine{}}, nil
+}
+
+// ItemLyrics implements provider.ItemLyricsSource.
+func (f *Fake) ItemLyrics(_ context.Context, itemID string) (model.Lyrics, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	l, ok := f.itemLyrics[itemID]
+	return l, ok, nil
 }
 
 // Call records a command.
@@ -169,6 +233,21 @@ func (f *Fake) Command(ctx context.Context, id string, cmd model.Command) error 
 			s.Playback.PositionMS, s.Playback.PositionAt = &p, &now
 		case model.CmdSetVolume:
 			s.Playback.Volume = model.Ptr(*cmd.Volume)
+		case model.CmdQueueJump:
+			f.mu.Lock()
+			q := f.queues[id]
+			f.mu.Unlock()
+			if *cmd.Index < len(q.Items) {
+				s.Track.TrackID = model.Ptr(q.Items[*cmd.Index].ItemID)
+				s.Track.Title = q.Items[*cmd.Index].Title
+			}
+		case model.CmdPlayItems:
+			if cmd.PlayMode() == model.PlayModeNow {
+				s.Track.TrackID = model.Ptr(cmd.ItemIDs[0])
+				s.Track.Title = model.Ptr("Item " + cmd.ItemIDs[0])
+			} else {
+				s.QueueRevision += "+"
+			}
 		}
 		f.Set(s)
 	}

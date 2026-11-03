@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -51,6 +52,16 @@ type Config struct {
 	Credentials  Credentials  `toml:"credentials"`
 	IPC          IPC          `toml:"ipc"`
 	Commands     Commands     `toml:"commands"`
+	Lyrics       Lyrics       `toml:"lyrics"`
+}
+
+// Lyrics configures optional lyrics sources.
+type Lyrics struct {
+	// LRCLIB enables the LRCLIB fallback. It sends artist, title, album and
+	// duration of tracks to the LRCLIB server; off by default.
+	LRCLIB bool `toml:"lrclib"`
+	// LRCLIBURL overrides the LRCLIB server (e.g. a self-hosted instance).
+	LRCLIBURL string `toml:"lrclib_url"`
 }
 
 type General struct {
@@ -310,6 +321,12 @@ func (c Config) Validate() error {
 	}
 	if c.IPC.SocketPath != "" && !filepath.IsAbs(c.IPC.SocketPath) {
 		return model.Errorf(model.ErrInvalidConfig, "ipc.socket_path must be an absolute path")
+	}
+	if c.Lyrics.LRCLIBURL != "" {
+		u, err := url.Parse(c.Lyrics.LRCLIBURL)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil || u.RawQuery != "" {
+			return model.Errorf(model.ErrInvalidConfig, "lyrics.lrclib_url must be an http(s) URL without credentials or query")
+		}
 	}
 	if c.IPC.MaxClients < 1 || c.IPC.MaxClients > 1024 {
 		return model.Errorf(model.ErrInvalidConfig, "ipc.max_clients must be between 1 and 1024")

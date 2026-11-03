@@ -48,7 +48,8 @@ install: build
 		echo "NOTE: $(BINDIR) is not in your PATH, so 'mediasyncctl' will not be found."; \
 		echo "      Add it, e.g. for zsh/bash: echo 'export PATH=\"$(BINDIR):\$$PATH\"' >> ~/.zshrc";; \
 	esac
-	@echo "Now run: systemctl --user daemon-reload && systemctl --user enable --now mediasyncd"
+	@echo "Now run: systemctl --user daemon-reload && systemctl --user enable mediasyncd && systemctl --user restart mediasyncd"
+	@echo "(restart is needed after an update: 'enable --now' does not replace a running service)"
 
 uninstall:
 	-systemctl --user disable --now mediasyncd 2>/dev/null

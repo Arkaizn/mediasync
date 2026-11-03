@@ -172,3 +172,18 @@ func TestPaths(t *testing.T) {
 		t.Error("override")
 	}
 }
+
+func TestLyricsConfig(t *testing.T) {
+	cfg, err := Parse([]byte("[lyrics]\nlrclib = true\nlrclib_url = \"https://lrclib.example.org\"\n"), "t")
+	if err != nil || !cfg.Lyrics.LRCLIB || cfg.Lyrics.LRCLIBURL != "https://lrclib.example.org" {
+		t.Fatalf("%+v %v", cfg.Lyrics, err)
+	}
+	if Default().Lyrics.LRCLIB {
+		t.Error("LRCLIB must be off by default")
+	}
+	for _, bad := range []string{"ftp://x", "https://u:p@x", "https://x/?a=1", "nope"} {
+		if _, err := Parse([]byte("[lyrics]\nlrclib_url = \""+bad+"\"\n"), "t"); model.CodeOf(err) != model.ErrInvalidConfig {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+}

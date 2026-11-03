@@ -63,10 +63,28 @@ const (
 	CapPrevious  Capability = "previous"
 	CapSeek      Capability = "seek"
 	CapVolume    Capability = "volume"
+
+	// CapQueue: sessions.queue returns the session's queue (read-only).
+	CapQueue Capability = "queue"
+	// CapQueueJump: the queue_jump command can be sent.
+	CapQueueJump Capability = "queue_jump"
+	// CapPlayItems: the play_items command can be sent.
+	CapPlayItems Capability = "play_items"
+	// CapLyrics: lyrics.get has a lyrics source for the current track (it
+	// may still report that the track has no lyrics).
+	CapLyrics Capability = "lyrics"
 )
 
 // AllCapabilities lists every capability in a stable order.
-var AllCapabilities = []Capability{CapPlay, CapPause, CapPlayPause, CapStop, CapNext, CapPrevious, CapSeek, CapVolume}
+var AllCapabilities = []Capability{CapPlay, CapPause, CapPlayPause, CapStop, CapNext, CapPrevious, CapSeek, CapVolume,
+	CapQueue, CapQueueJump, CapPlayItems, CapLyrics}
+
+// ReadOnlyCapabilities do not control playback; view-only sessions may have them.
+var ReadOnlyCapabilities = []Capability{CapQueue, CapLyrics}
+
+// ControlCapabilities are all capabilities that control playback.
+var ControlCapabilities = []Capability{CapPlay, CapPause, CapPlayPause, CapStop, CapNext, CapPrevious, CapSeek, CapVolume,
+	CapQueueJump, CapPlayItems}
 
 // Player describes the application or device that is playing.
 type Player struct {
@@ -179,6 +197,9 @@ type Session struct {
 	DuplicateOf *string `json:"duplicate_of,omitempty"`
 	// Linked lists sessions recognised as duplicates of this one.
 	Linked []string `json:"linked,omitempty"`
+	// QueueRevision changes whenever the session's queue changes. It is not
+	// exposed; the engine turns changes into "queue.changed" events.
+	QueueRevision string `json:"-"`
 	// Hidden is set when the session is excluded from default listings:
 	// "duplicate", "mode", "view_only" or "stale".
 	Hidden string `json:"hidden,omitempty"`
