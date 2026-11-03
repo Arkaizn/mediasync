@@ -15,6 +15,9 @@ session **and** on your other devices, through a single stable API.
   provider, origin, player, device and session.
 - **Deduplication**: Feishin playing from Jellyfin shows up once, as the
   local player. Unrelated devices playing the same song are not merged.
+- **Queue, lyrics and playlists**: a session's queue (where the server
+  exposes it), synced lyrics from Jellyfin or from the player itself
+  (Feishin), your Jellyfin playlists, and "play this on that device".
 - **Exact command routing** to the session you chose, with capability
   checks, timeouts, and honest results: `verified` or `acknowledged`.
 - **Local JSON-RPC API** over a per-user Unix socket, with live events and
@@ -113,6 +116,8 @@ mediasyncctl settings set remote_enabled=false
 mediasyncctl watch                           # live view (add --json for NDJSON)
 mediasyncctl diag                            # diagnostics
 mediasyncctl jellyfin check                  # why is my phone view-only?
+mediasyncctl queue | lyrics | playlists      # queue, lyrics, playlists
+mediasyncctl play-items PLAYLIST_ID --session ID
 ```
 
 ## Using the API

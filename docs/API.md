@@ -127,7 +127,7 @@ position as `position_ms + (now - position_at) * (rate ?? 1)` while
 | `provider` / `provider_instance` | `mpris`, `jellyfin` / `mpris`, `jellyfin:<server name>`. |
 | `origin` | `local` (this user session) or `remote` (another device, via a server). |
 | `controllable` | `false` = view-only. |
-| `capabilities` | Subset of `play`, `pause`, `play_pause`, `stop`, `next`, `previous`, `seek`, `volume`. Only advertised when the player supports them. |
+| `capabilities` | Subset of `play`, `pause`, `play_pause`, `stop`, `next`, `previous`, `seek`, `volume`, `queue`, `queue_jump`, `play_items`, `lyrics`. Only advertised when supported. `queue` and `lyrics` are read-only and also appear on view-only sessions; all others need a controllable session. See [Media features](#media-features-queue-lyrics-playlists). |
 | `playback.state` | `playing`, `paused`, `stopped`, `unknown`. |
 | `playback.volume` | 0.0–1.0 (MPRIS players may report >1.0). |
 | `playback.repeat` | `none`, `track`, `playlist`, or `null`. |
@@ -199,19 +199,27 @@ Params: `{"session_id": "…"}` to select, or `{"session_id": null}` for automat
 Params:
 ```json
 {"session_id": "…",              // optional; default: the selected session
- "command": "play" | "pause" | "play_pause" | "stop" | "next" | "previous" | "seek" | "set_volume",
+ "command": "play" | "pause" | "play_pause" | "stop" | "next" | "previous" | "seek" | "set_volume"
+          | "queue_jump" | "play_items",
  "position_ms": 60000,           // seek: absolute position, or
  "offset_ms": -10000,            // seek: relative offset (exactly one of the two)
- "volume": 0.5}                  // set_volume: 0.0–1.5
+ "volume": 0.5,                  // set_volume: 0.0–1.5
+ "index": 5,                     // queue_jump: index into sessions.queue items
+ "item_ids": ["…"],              // play_items: 1–200 track, album or playlist ids
+ "mode": "now" | "next" | "last"}  // play_items: default "now"
 ```
 
 The command goes **only** to the provider that owns `session_id`. If that
 session is gone, the call fails (`session_not_found`): it is never
-redirected to another player.
+redirected to another player. The one documented exception: `queue_jump`
+and `play_items` on a local player whose queue comes from its *linked*
+remote session (see `linked`) are carried out through that session, and
+the result names it in `via_session_id`.
 
 Result:
 ```json
-{"session_id": "…", "command": "pause", "outcome": "verified", "session": { … }}
+{"session_id": "…", "command": "pause", "outcome": "verified", "session": { … },
+ "via_session_id": "…"}   // only when routed through a linked session
 ```
 
 **Success contract.** A result is only returned after the provider
@@ -255,6 +263,7 @@ Event params:
 | `provider.status` | `provider` | A provider's health changed. |
 | `provider.removed` | `provider_instance` | A provider was stopped (e.g. disabled). |
 | `settings.changed` | `settings` | Presentation settings changed. |
+| `queue.changed` | `session_id` | The session's queue changed: call `sessions.queue` again. Sent only for sessions in this subscription's view; a queue change alone produces no `session.updated`. |
 | `subscription.closed` | `reason` (`overflow`, `shutdown`) | Events stopped. Re-subscribe. |
 
 `revision` increases by one per service event. Because each subscription is
@@ -328,6 +337,66 @@ logged-in user as the server reports them, including idle ones.
 ```
 Failures that prevent the check (server unreachable, not logged in) are
 reported in `error`, not as a JSON-RPC error.
+
+### `sessions.queue`
+Params: `{"session_id": "…"}` →
+```json
+{"session_id": "…", "available": true, "current_index": 0,
+ "items": [{"index": 0, "item_id": "…", "title": "Track 1", "artists": ["Artist A"],
+            "album": "Album X", "duration_ms": 180000, "artwork_url": "…"}],
+ "source": "jellyfin"}
+```
+Without queue data: `{"session_id": "…", "available": false, "current_index": null, "items": [], "source": null}`.
+Unknown item details stay `null`. See [Media features](#media-features-queue-lyrics-playlists)
+for where queues come from (and why Jellyfin 12.2 has none during playback).
+
+### `lyrics.get`
+Params: `{"session_id": "…"}` (lyrics of the session's **current** track) →
+```json
+{"session_id": "…", "track_id": "…", "status": "ok", "synced": true,
+ "lines": [{"start_ms": 1000, "text": "First line"}, {"start_ms": 5500, "text": "Second line"}],
+ "source": "jellyfin"}
+```
+- `status`: `ok`; `none` (a source answered that the track has no lyrics);
+  `unavailable` (no source could answer: no item id, server unreachable, …).
+  Text is never invented.
+- `synced`: lines carry `start_ms`; otherwise `start_ms` is `null` on every line.
+- `source`: `jellyfin`, `mpris` (lyrics the player publishes itself, e.g.
+  Feishin), `lrclib` (optional fallback), or `null`.
+- `track_id` is the session's `track.track_id`. Call `lyrics.get` again when
+  it changes; there is no lyrics event. Results are cached per track.
+
+### `library.playlists`
+Params: `{"server": "home"}` (optional with one server) →
+```json
+{"playlists": [{"id": "…", "name": "Road Trip", "item_count": 2, "artwork_url": null,
+                "server": "home", "media_type": "Audio"}]}
+```
+Play one with `player.command` `play_items` (`item_ids: [id]`).
+
+## Media features (queue, lyrics, playlists)
+
+| Feature | Jellyfin 12.2 | Jellyfin 10.10 | Local MPRIS player |
+|---------|---------------|----------------|--------------------|
+| `queue` | **not available**: 12.x no longer exposes a client's `NowPlayingQueue` during playback (only after it stops), verified on 12.2.0 | ✅ from `NowPlayingQueue` (clients must report it, e.g. Finamp's *Report queue to server*) | from its linked Jellyfin session only (MPRIS players do not expose queues here) |
+| `queue_jump` | not available (needs `queue`) | ✅ by re-sending the queue with `PlayNow` + start index: Jellyfin has no "jump" command, so clients such as Finamp rebuild their queue from it | via linked session |
+| `play_items` | ✅ clients with remote control that list `Audio` in `PlayableMediaTypes` | ✅ | via linked session |
+| `lyrics` | ✅ `/Audio/{id}/Lyrics` when the item `HasLyrics` | ✅ | ✅ from `xesam:asText` (Feishin publishes LRC there); or the Jellyfin item when the MPRIS track id contains one (Feishin does); or the linked session |
+
+- **Optional fallback:** with `[lyrics] lrclib = true`, tracks without lyrics
+  elsewhere are looked up on LRCLIB by artist, title, album and duration
+  (this sends that metadata to the LRCLIB server). It is off by default.
+- **`play_items` details:** playlists are expanded by mediasync in playlist
+  order (Jellyfin 12.2 would reorder them); albums and artists are expanded
+  by the server; unknown ids fail with `invalid_argument` before anything is
+  sent (the server would silently send an empty list). At most 300 tracks
+  per command.
+- **Verification:** `queue_jump` is verified when the target track plays;
+  `play_items` `now` when the track or the queue changes; `next`/`last`
+  only through a queue change, so they stay `acknowledged` where the server
+  exposes no queue (12.2). Jellyfin 10.10 ignores *empty* queue reports and
+  can therefore keep showing an outdated queue after a client's queue
+  runs empty.
 
 ### `service.reload`
 Re-reads the configuration file. If it is invalid, the running

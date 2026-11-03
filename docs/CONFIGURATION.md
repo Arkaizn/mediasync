@@ -106,6 +106,12 @@ A link only merges sessions when they also play the same track.
 | `verify_timeout` | `"1.5s"` | Wait to observe the effect on local players |
 | `remote_verify_timeout` | `"5s"` | Wait to observe the effect on remote sessions |
 
+### `[lyrics]`
+| Key | Default | |
+|-----|---------|-|
+| `lrclib` | `false` | Fallback lyrics lookup on [LRCLIB](https://lrclib.net) for tracks without lyrics from the player or the media server. **Sends the track's artist, title, album and duration to the LRCLIB server.** |
+| `lrclib_url` | `https://lrclib.net` | Another LRCLIB instance (e.g. self-hosted); `http(s)` URL without credentials |
+
 ## Runtime settings
 
 These can be changed without editing the file:

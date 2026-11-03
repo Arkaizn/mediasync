@@ -76,6 +76,28 @@ Observed facts that shape the provider:
    userland proxy this was the Docker gateway (`172.17.0.1`) for every
    client. See `dedup.use_address`.
 
+## Queue, lyrics, playlists and play commands (verified on 12.2.0 and 10.10.7)
+
+| Purpose | Request | Observed |
+|---------|---------|----------|
+| Queue | `NowPlayingQueue` in `GET /Sessions` | **12.2: always empty during playback.** In 12.x `SessionManager` only stores the reported queue in `OnPlaybackStopped`; 10.10.7 stores it on start/progress and also fills `NowPlayingQueueFullItems` (absent on 12.2). 10.10 ignores empty queue reports. |
+| Lyrics | `GET /Audio/{itemId}/Lyrics` | `{"Lyrics":[{"Text","Start"(ticks)?}]}`; `Start` missing for unsynced lyrics (`.txt`); 404 when there are none (also for unknown items); authentication required. `NowPlayingItem.HasLyrics` tells in advance. |
+| Playlists | `GET /Items?recursive=true&includeItemTypes=Playlist&fields=ChildCount` | `GET /Playlists` is 405; entries via `GET /Playlists/{id}/Items` in playlist order. |
+| Play | `POST /Sessions/{id}/Playing?playCommand=PlayNow\|PlayNext\|PlayLast&itemIds=…&startIndex=` | Delivered as WebSocket message `Play` `{ItemIds, PlayCommand, StartIndex}`. The server expands albums and playlists into tracks, but **reorders playlists**; unknown ids give an empty `ItemIds` with 204; clients without audio support or remote control also get 204. Invalid `playCommand` → 400. |
+
+Clients:
+- **Finamp** reports only the *upcoming* tracks as `NowPlayingQueue` (its
+  `peekQueue(next: 100)`), with `PlaylistItemId` set to its queue section
+  names, and only with *Report queue to server* or *Play On* enabled.
+  mediasync puts the current track in front. Finamp handles `PlayNow`
+  (with `StartIndex`), `PlayNext` and `PlayLast`, and fetches the ids as
+  audio items, so it relies on the server's album expansion.
+- **Feishin** (Linux) publishes its lyrics in MPRIS `xesam:asText` as LRC
+  and puts the Jellyfin item id into `mpris:trackid`
+  (`…/track/<item id>`). It has no MPRIS TrackList (no queue over MPRIS).
+  Its own remote-control server exposes its queue, which mediasync does not
+  use yet.
+
 ## Session states in mediasync
 
 | Jellyfin situation | mediasync |

@@ -8,6 +8,27 @@ are versioned separately (see docs/API.md).
 ## [Unreleased]
 
 ### Added
+- Queue, lyrics and playlists (API version 1, additive): `sessions.queue`,
+  `lyrics.get`, `library.playlists`, `player.command` `queue_jump` and
+  `play_items`, the `queue.changed` event and the `queue`, `queue_jump`,
+  `play_items` and `lyrics` capabilities. CLI: `queue`, `lyrics`,
+  `playlists`, `jump`, `play-items`.
+- Lyrics from Jellyfin (`/Audio/{id}/Lyrics`), from players that publish
+  them over MPRIS (`xesam:asText`, e.g. Feishin), by Jellyfin item id for
+  local players, and an optional LRCLIB fallback (`[lyrics] lrclib`, off by
+  default).
+- Local players borrow queue and lyrics from their linked Jellyfin session;
+  queue commands are carried out through it (`via_session_id`).
+
+### Changed
+- View-only sessions keep read-only capabilities (`queue`, `lyrics`).
+- Fake MPRIS test player uses its own property store (the godbus `prop`
+  helper merges map values in place, keeping stale metadata and racing with
+  replies).
+
+### Known limitations
+- Jellyfin 12.x does not expose remote clients' queues during playback
+  (verified on 12.2.0), so `queue`/`queue_jump` are unavailable there.
 - systemd `Type=notify`: `systemctl restart` waits until the socket is ready; `mediasyncctl` also waits briefly for a starting service.
 - `jellyfin check` detects an app whose saved login belongs to another device ID (it then appears twice and is never controllable).
 - `mediasyncctl jellyfin check` / `jellyfin.check`: diagnoses why a remote app
