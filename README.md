@@ -47,6 +47,11 @@ pause → jellyfin:home:1e54ee7457f628fd: verified
 
 ## Installation
 
+**Arch Linux:** `yay -S mediasync-git` (AUR; see [packaging/aur](packaging/aur/README.md)),
+then `systemctl --user enable --now mediasyncd`.
+
+**From source:**
+
 ```sh
 git clone https://github.com/arkaizn/mediasync && cd mediasync
 make                     # builds bin/mediasyncd and bin/mediasyncctl

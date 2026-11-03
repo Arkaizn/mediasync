@@ -8,6 +8,7 @@ are versioned separately (see docs/API.md).
 ## [Unreleased]
 
 ### Added
+- AUR package `mediasync-git` (`packaging/aur/`).
 - Queue, lyrics and playlists (API version 1, additive): `sessions.queue`,
   `lyrics.get`, `library.playlists`, `player.command` `queue_jump` and
   `play_items`, the `queue.changed` event and the `queue`, `queue_jump`,
