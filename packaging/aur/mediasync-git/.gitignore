@@ -1,0 +1,6 @@
+# makepkg output
+/mediasync/
+/src/
+/pkg/
+*.pkg.tar.*
+*.log
