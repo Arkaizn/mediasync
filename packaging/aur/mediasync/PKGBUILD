@@ -16,6 +16,9 @@ optdepends=(
   'keepassxc: Secret Service backend for Jellyfin tokens'
 )
 conflicts=('mediasync-git')
+# No -debug split package: it would conflict between mediasync and
+# mediasync-git (same file paths) when switching packages.
+options=('!debug')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/arkaizn/mediasync/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('SKIP')
 

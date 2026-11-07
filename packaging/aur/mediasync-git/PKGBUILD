@@ -2,7 +2,7 @@
 pkgname=mediasync-git
 _pkgname=mediasync
 pkgver=r0
-pkgrel=2
+pkgrel=3
 pkgdesc="Universal media session bridge: local MPRIS players and Jellyfin sessions behind one local API"
 arch=('x86_64' 'aarch64')
 url="https://github.com/arkaizn/mediasync"
@@ -16,6 +16,9 @@ optdepends=(
 )
 provides=("$_pkgname")
 conflicts=("$_pkgname")
+# No -debug split package: it would conflict between mediasync and
+# mediasync-git (same file paths) when switching packages.
+options=('!debug')
 source=("$_pkgname::git+https://github.com/arkaizn/mediasync.git")
 sha256sums=('SKIP')
 
