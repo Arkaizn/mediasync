@@ -13,6 +13,7 @@ pkgbase = mediasync
 	optdepends = kwallet: Secret Service backend for Jellyfin tokens (KWallet >= 5.97)
 	optdepends = keepassxc: Secret Service backend for Jellyfin tokens
 	conflicts = mediasync-git
+	options = !debug
 	source = mediasync-0.2.0.tar.gz::https://github.com/arkaizn/mediasync/archive/refs/tags/v0.2.0.tar.gz
 	sha256sums = SKIP
 
