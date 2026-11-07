@@ -63,6 +63,8 @@ const (
 	CapPrevious  Capability = "previous"
 	CapSeek      Capability = "seek"
 	CapVolume    Capability = "volume"
+	// CapShuffle: set_shuffle switches the player's own shuffle mode.
+	CapShuffle Capability = "shuffle"
 
 	// CapQueue: sessions.queue returns the session's queue (read-only).
 	CapQueue Capability = "queue"
@@ -80,14 +82,14 @@ const (
 
 // AllCapabilities lists every capability in a stable order.
 var AllCapabilities = []Capability{CapPlay, CapPause, CapPlayPause, CapStop, CapNext, CapPrevious, CapSeek, CapVolume,
-	CapQueue, CapQueueJump, CapPlayItems, CapPlayItemsShuffle, CapLyrics}
+	CapShuffle, CapQueue, CapQueueJump, CapPlayItems, CapPlayItemsShuffle, CapLyrics}
 
 // ReadOnlyCapabilities do not control playback; view-only sessions may have them.
 var ReadOnlyCapabilities = []Capability{CapQueue, CapLyrics}
 
 // ControlCapabilities are all capabilities that control playback.
 var ControlCapabilities = []Capability{CapPlay, CapPause, CapPlayPause, CapStop, CapNext, CapPrevious, CapSeek, CapVolume,
-	CapQueueJump, CapPlayItems, CapPlayItemsShuffle}
+	CapShuffle, CapQueueJump, CapPlayItems, CapPlayItemsShuffle}
 
 // Player describes the application or device that is playing.
 type Player struct {

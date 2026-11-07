@@ -16,6 +16,12 @@ are versioned separately (see docs/API.md).
   keeps the URL limit (shuffling before the cut). A shuffled "now" does
   not start with the track already playing. CLI:
   `mediasyncctl play-items ID... --shuffle`.
+- `set_shuffle` command (`"shuffle": true|false`) and capability `shuffle`
+  to switch a player's own shuffle mode: MPRIS players with a writable
+  `Shuffle` property, Jellyfin clients that declare `SetShuffleQueue`
+  (`GeneralCommand` with `ShuffleMode` `Shuffle`/`Sorted`, verified on
+  12.4.0). Verified through `playback.shuffle`. CLI:
+  `mediasyncctl shuffle on|off`.
 
 ### Fixed
 - Jellyfin: `play_items` with a large playlist failed with `provider_error`.

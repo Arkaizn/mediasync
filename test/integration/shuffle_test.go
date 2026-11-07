@@ -67,3 +67,36 @@ func TestRealJellyfinPlayItemsShuffle(t *testing.T) {
 		}
 	}
 }
+
+// TestRealJellyfinSetShuffle checks set_shuffle against a real server: the
+// GeneralCommand SetShuffleQueue reaches a client that declares it, and the
+// PlaybackOrder it reports back verifies the command.
+func TestRealJellyfinSetShuffle(t *testing.T) {
+	env := jellyfinEnv(t)
+	ids := audioItems(t, env)
+	cfg := config.Default()
+	cfg.Local.Enabled = false
+	cfg.Jellyfin.PollInterval = config.Duration(time.Second)
+	cfg.Jellyfin.Servers = []config.JellyfinServer{{Name: "it", URL: env.url}}
+	cfg.Commands.RemoteVerifyTimeout = config.Duration(8 * time.Second)
+	c := startService(t, cfg, nil)
+	rpc[map[string]any](t, c, "jellyfin.login", map[string]any{"server": "it", "username": env.user, "password": env.password})
+
+	phone := newSimClient(t, env, "Finamp", "IT Phone SetShuffle", ids, true)
+	ps := waitSession(t, c, "phone", func(s model.Session) bool {
+		return s.Player.DeviceID != nil && *s.Player.DeviceID == phone.deviceID && s.Has(model.CapShuffle)
+	})
+	if ps.Playback.Shuffle == nil || *ps.Playback.Shuffle {
+		t.Fatalf("initial shuffle %v", ps.Playback.Shuffle)
+	}
+	for _, want := range []bool{true, false} {
+		r := command(t, c, ps.ID, map[string]any{"command": "set_shuffle", "shuffle": want})
+		if r.Outcome != model.OutcomeVerified || r.Session == nil || *r.Session.Playback.Shuffle != want {
+			t.Errorf("set_shuffle %v: %+v", want, r)
+		}
+	}
+	got := phone.Received()
+	if !slices.Equal(got[len(got)-2:], []string{"SetShuffleQueue(Shuffle)", "SetShuffleQueue(Sorted)"}) {
+		t.Errorf("phone received %v", got)
+	}
+}

@@ -325,6 +325,7 @@ type simClient struct {
 	posTicks int64
 	paused   bool
 	volume   int
+	shuffled bool
 	received []string
 	stop     chan struct{}
 	wg       sync.WaitGroup
@@ -374,7 +375,7 @@ func newSimClient(t *testing.T, env jfEnv, client, device string, items []string
 	s.token = auth.AccessToken
 	if controllable {
 		s.do("POST", "/Sessions/Capabilities/Full", map[string]any{
-			"PlayableMediaTypes": []string{"Audio"}, "SupportedCommands": []string{"SetVolume", "VolumeUp", "VolumeDown"},
+			"PlayableMediaTypes": []string{"Audio"}, "SupportedCommands": []string{"SetVolume", "VolumeUp", "VolumeDown", "SetShuffleQueue"},
 			"SupportsMediaControl": true,
 		}, nil)
 		wsURL := "ws" + strings.TrimPrefix(env.url, "http") + "/socket"
@@ -399,6 +400,7 @@ func (s *simClient) state() map[string]any {
 	st := map[string]any{
 		"ItemId": s.items[s.idx], "PositionTicks": s.posTicks, "IsPaused": s.paused, "CanSeek": true,
 		"VolumeLevel": s.volume, "PlayMethod": "DirectPlay", "PlaySessionId": s.deviceID,
+		"PlaybackOrder": map[bool]string{true: "Shuffle", false: "Default"}[s.shuffled],
 	}
 	// Report the upcoming tracks the way Finamp does ("Report queue to server").
 	queue := []map[string]any{}
@@ -528,11 +530,17 @@ func (s *simClient) readLoop() {
 			_ = json.Unmarshal(m.Data, &d)
 			s.mu.Lock()
 			s.received = append(s.received, d.Name)
-			if d.Name == "SetVolume" {
+			event := "VolumeChange"
+			switch d.Name {
+			case "SetVolume":
 				fmt.Sscanf(d.Arguments["Volume"], "%d", &s.volume)
+			case "SetShuffleQueue":
+				s.received[len(s.received)-1] += "(" + d.Arguments["ShuffleMode"] + ")"
+				s.shuffled = d.Arguments["ShuffleMode"] == "Shuffle"
+				event = "PlaybackOrderChange"
 			}
 			s.mu.Unlock()
-			s.report("/Sessions/Playing/Progress", "VolumeChange")
+			s.report("/Sessions/Playing/Progress", event)
 		}
 	}
 }

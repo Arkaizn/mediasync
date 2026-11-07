@@ -1,13 +1,19 @@
 package model
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
-func TestShuffleOnlyForPlayItems(t *testing.T) {
+// shuffle is only valid on play_items and (required) on set_shuffle.
+func TestShuffleOnlyForPlayItemsAndSetShuffle(t *testing.T) {
 	yes, no := Ptr(true), Ptr(false)
 	ok := []Command{
 		{Name: CmdPlayItems, ItemIDs: []string{"a1"}, Shuffle: yes},
 		{Name: CmdPlayItems, ItemIDs: []string{"a1"}, Shuffle: no, Mode: PlayModeLast},
 		{Name: CmdPlayItems, ItemIDs: []string{"a1"}},
+		{Name: CmdSetShuffle, Shuffle: yes},
+		{Name: CmdSetShuffle, Shuffle: no},
 	}
 	for _, c := range ok {
 		if err := c.Validate(); err != nil {
@@ -21,6 +27,9 @@ func TestShuffleOnlyForPlayItems(t *testing.T) {
 		{Name: CmdQueueJump, Index: Ptr(1), Shuffle: yes},
 		{Name: CmdSeek, PositionMS: Ptr[int64](1), Shuffle: yes},
 		{Name: CmdSetVolume, Volume: Ptr(0.5), Shuffle: yes},
+		{Name: CmdSetShuffle},
+		{Name: CmdSetShuffle, Shuffle: yes, Volume: Ptr(0.5)},
+		{Name: CmdSetShuffle, Shuffle: yes, Mode: PlayModeNow},
 	}
 	for _, c := range bad {
 		if err := c.Validate(); CodeOf(err) != ErrInvalidArgument {
@@ -43,5 +52,14 @@ func TestPlayItemsRequiredCapability(t *testing.T) {
 	// The new capability is part of the canonical lists.
 	if s := SortCapabilities([]Capability{CapPlayItemsShuffle, CapPlay}); len(s) != 2 || s[1] != CapPlayItemsShuffle {
 		t.Errorf("sort dropped or misplaced play_items_shuffle: %v", s)
+	}
+}
+
+func TestSetShuffleRequiresTheShuffleCapability(t *testing.T) {
+	if c, ok := (Command{Name: CmdSetShuffle, Shuffle: Ptr(true)}).RequiredCapability(); !ok || c != CapShuffle {
+		t.Errorf("set_shuffle needs %s", c)
+	}
+	if !slices.Contains(ControlCapabilities, CapShuffle) || slices.Contains(ReadOnlyCapabilities, CapShuffle) {
+		t.Error("shuffle must be a control capability")
 	}
 }

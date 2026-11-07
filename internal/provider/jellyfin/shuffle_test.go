@@ -150,3 +150,39 @@ func TestShuffledPlayNowDoesNotStartWithTheCurrentTrack(t *testing.T) {
 	}
 	// "next"/"last" keep any order: the current track keeps playing anyway.
 }
+
+func TestSetShuffleOnJellyfin(t *testing.T) {
+	e := newEnv(t, nil)
+	library(e.srv)
+	ph := queuePhone(e.srv)
+	e.srv.Update(ph.SessionID, func(c *fakejellyfin.Client) { c.SupportedCommands = []string{"SetVolume", "SetShuffleQueue"} })
+	plain := e.srv.AddClient(&fakejellyfin.Client{ // remote control, but no SetShuffleQueue
+		UserID: e.srv.UserID("alice"), UserName: "alice", Client: "Other", DeviceName: "Tablet", DeviceID: "tab",
+		Controllable: true, ApplyCommands: true, ItemID: t1, Title: "Track 1", RunTimeTicks: 1_800_000_000,
+	})
+	e.login(t)
+	e.run(t)
+	s := e.sessionFor(t, "iphone-q", "Finamp", func(x model.Session) bool { return x.Has(model.CapShuffle) })
+	ctx := context.Background()
+	for _, want := range []bool{true, false} {
+		if err := e.prov.Command(ctx, s.ID, model.Command{Name: model.CmdSetShuffle, Shuffle: model.Ptr(want)}); err != nil {
+			t.Fatal(err)
+		}
+		e.sessionFor(t, "iphone-q", "Finamp", func(x model.Session) bool { return x.Playback.Shuffle != nil && *x.Playback.Shuffle == want })
+	}
+	got := e.srv.ClientState(ph.SessionID).Received
+	if !slices.Equal(got[len(got)-2:], []string{"SetShuffleQueue(Shuffle)", "SetShuffleQueue(Sorted)"}) {
+		t.Errorf("phone received %v", got)
+	}
+
+	o := e.sessionFor(t, "tab", "Other", nil)
+	if o.Has(model.CapShuffle) {
+		t.Errorf("shuffle advertised without SetShuffleQueue: %v", o.Capabilities)
+	}
+	if err := e.prov.Command(ctx, o.ID, model.Command{Name: model.CmdSetShuffle, Shuffle: model.Ptr(true)}); model.CodeOf(err) != model.ErrUnsupported {
+		t.Errorf("want unsupported: %v", err)
+	}
+	if len(e.srv.ClientState(plain.SessionID).Received) != 0 {
+		t.Error("command reached a client without the capability")
+	}
+}

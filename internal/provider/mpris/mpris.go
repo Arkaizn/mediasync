@@ -78,7 +78,8 @@ type player struct {
 
 	props map[string]dbus.Variant // Player interface properties
 
-	volumeWritable bool
+	volumeWritable  bool
+	shuffleWritable bool
 
 	positionUS  int64
 	hasPosition bool
@@ -421,10 +422,14 @@ func (p *Provider) load(ctx context.Context, owner string) {
 	playerErr := obj.CallWithContext(cctx, ifaceProps+".GetAll", 0, ifacePlayer).Store(&props)
 	cancel()
 
-	volumeWritable := false
+	volumeWritable, shuffleWritable := false, false
 	if playerErr == nil {
-		if _, ok := props["Volume"]; ok {
-			volumeWritable = p.volumeWritable(ctx, obj)
+		_, hasVolume := props["Volume"]
+		_, hasShuffle := props["Shuffle"]
+		if hasVolume || hasShuffle {
+			w := p.writableProps(ctx, obj)
+			volumeWritable = hasVolume && w("Volume")
+			shuffleWritable = hasShuffle && w("Shuffle")
 		}
 	}
 
@@ -450,6 +455,7 @@ func (p *Provider) load(ctx context.Context, owner string) {
 		pl.playerLoaded = true
 		pl.props = props
 		pl.volumeWritable = volumeWritable
+		pl.shuffleWritable = shuffleWritable
 		if v, ok := props["Position"]; ok {
 			if us, ok := variantInt64(v); ok {
 				pl.positionUS, pl.hasPosition, pl.positionAt = us, true, p.now()
@@ -462,32 +468,33 @@ func (p *Provider) load(ctx context.Context, owner string) {
 	}
 }
 
-// volumeWritable checks via introspection whether Volume is writable. The
-// spec mandates readwrite, but some players expose it read-only. If
-// introspection is unavailable, the spec is trusted.
-func (p *Provider) volumeWritable(ctx context.Context, obj dbus.BusObject) bool {
+// writableProps reports via introspection which player properties are
+// writable. The spec mandates readwrite for Volume (and Shuffle, if it is
+// implemented), but some players expose them read-only. If introspection is
+// unavailable, the spec is trusted.
+func (p *Provider) writableProps(ctx context.Context, obj dbus.BusObject) func(name string) bool {
+	trust := func(string) bool { return true }
 	cctx, cancel := p.callCtx(ctx)
 	defer cancel()
 	var xml string
 	if err := obj.CallWithContext(cctx, "org.freedesktop.DBus.Introspectable.Introspect", 0).Store(&xml); err != nil {
-		return true
+		return trust
 	}
 	var node introspect.Node
 	if err := xmlUnmarshal(xml, &node); err != nil {
-		return true
+		return trust
 	}
 	for _, iface := range node.Interfaces {
 		if iface.Name != ifacePlayer {
 			continue
 		}
+		access := map[string]string{}
 		for _, prop := range iface.Properties {
-			if prop.Name == "Volume" {
-				return prop.Access == "readwrite" || prop.Access == "write"
-			}
+			access[prop.Name] = prop.Access
 		}
-		return false
+		return func(name string) bool { return access[name] == "readwrite" || access[name] == "write" }
 	}
-	return true
+	return func(string) bool { return false }
 }
 
 func (p *Provider) propertiesChanged(ctx context.Context, sender, iface string, changed map[string]dbus.Variant, invalidated []string) {
@@ -740,6 +747,11 @@ func (p *Provider) buildSession(pl *player) model.Session {
 		if _, ok := props["Volume"]; ok && pl.volumeWritable {
 			caps = append(caps, model.CapVolume)
 		}
+		// Shuffle is optional in MPRIS: only if the player has it and it is
+		// writable.
+		if _, ok := props["Shuffle"]; ok && pl.shuffleWritable {
+			caps = append(caps, model.CapShuffle)
+		}
 		s.Capabilities = model.SortCapabilities(caps)
 		s.Controllable = true
 	} else {
@@ -805,6 +817,8 @@ func (p *Provider) Command(ctx context.Context, sessionID string, cmd model.Comm
 		}
 	case model.CmdSetVolume:
 		call = obj.CallWithContext(cctx, ifaceProps+".Set", 0, ifacePlayer, "Volume", dbus.MakeVariant(*cmd.Volume))
+	case model.CmdSetShuffle:
+		call = obj.CallWithContext(cctx, ifaceProps+".Set", 0, ifacePlayer, "Shuffle", dbus.MakeVariant(*cmd.Shuffle))
 	default:
 		return model.Errorf(model.ErrUnsupported, "unknown command %q", cmd.Name)
 	}

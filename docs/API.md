@@ -127,7 +127,7 @@ position as `position_ms + (now - position_at) * (rate ?? 1)` while
 | `provider` / `provider_instance` | `mpris`, `jellyfin` / `mpris`, `jellyfin:<server name>`. |
 | `origin` | `local` (this user session) or `remote` (another device, via a server). |
 | `controllable` | `false` = view-only. |
-| `capabilities` | Subset of `play`, `pause`, `play_pause`, `stop`, `next`, `previous`, `seek`, `volume`, `queue`, `queue_jump`, `play_items`, `play_items_shuffle`, `lyrics`. Only advertised when supported. `queue` and `lyrics` are read-only and also appear on view-only sessions; all others need a controllable session. See [Media features](#media-features-queue-lyrics-playlists). |
+| `capabilities` | Subset of `play`, `pause`, `play_pause`, `stop`, `next`, `previous`, `seek`, `volume`, `shuffle`, `queue`, `queue_jump`, `play_items`, `play_items_shuffle`, `lyrics`. Only advertised when supported. `queue` and `lyrics` are read-only and also appear on view-only sessions; all others need a controllable session. See [Media features](#media-features-queue-lyrics-playlists). |
 | `playback.state` | `playing`, `paused`, `stopped`, `unknown`. |
 | `playback.volume` | 0.0–1.0 (MPRIS players may report >1.0). |
 | `playback.repeat` | `none`, `track`, `playlist`, or `null`. |
@@ -200,14 +200,15 @@ Params:
 ```json
 {"session_id": "…",              // optional; default: the selected session
  "command": "play" | "pause" | "play_pause" | "stop" | "next" | "previous" | "seek" | "set_volume"
-          | "queue_jump" | "play_items",
+          | "set_shuffle" | "queue_jump" | "play_items",
  "position_ms": 60000,           // seek: absolute position, or
  "offset_ms": -10000,            // seek: relative offset (exactly one of the two)
  "volume": 0.5,                  // set_volume: 0.0–1.5
  "index": 5,                     // queue_jump: index into sessions.queue items
  "item_ids": ["…"],              // play_items: 1–200 track, album or playlist ids
  "mode": "now" | "next" | "last", // play_items: default "now"
- "shuffle": true}                 // play_items: random order (needs play_items_shuffle)
+ "shuffle": true}                 // play_items: random order (needs play_items_shuffle);
+                                 // set_shuffle: required, the player's shuffle mode (needs shuffle)
 ```
 
 The command goes **only** to the provider that owns `session_id`. If that
@@ -222,6 +223,15 @@ Result:
 {"session_id": "…", "command": "pause", "outcome": "verified", "session": { … },
  "via_session_id": "…"}   // only when routed through a linked session
 ```
+
+`set_shuffle` switches the player's own shuffle mode (`playback.shuffle`)
+and is verified when the player reports the new mode. It needs the
+`shuffle` capability: MPRIS players with a writable `Shuffle` property, and
+Jellyfin clients that declare `SetShuffleQueue` (sent as a `GeneralCommand`
+with `ShuffleMode` `Shuffle` or `Sorted`). Some clients declare it without
+handling it (Finamp, see docs/JELLYFIN.md); the result is then
+`acknowledged`. It is unrelated to `play_items` `"shuffle"`, which orders
+the items mediasync sends.
 
 **Success contract.** A result is only returned after the provider
 *accepted* the command: the MPRIS method call returned without error, or the

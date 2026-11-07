@@ -42,6 +42,7 @@ Playback (default target: the selected session):
   play | pause | toggle | stop | next | previous [--session ID]
   seek POSITION [--session ID] POSITION: 90, 1:30, 90s, +10s, -5s
   volume LEVEL [--session ID]  LEVEL: 0-100 (percent) or 0.0-1.0
+  shuffle on|off [--session ID] switch the player's shuffle mode
   jump INDEX [--session ID]    play queue item INDEX (see "queue")
   play-items ID... [--mode now|next|last] [--shuffle] [--session ID]
                                play tracks, albums or playlists by id
@@ -252,6 +253,16 @@ func runCommand(g globals, cmd string, args []string) error {
 			return err
 		}
 		return sendCommand(g, map[string]any{"session_id": *session, "command": model.CmdSetVolume, "volume": v})
+	case "shuffle":
+		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
+		session := fs.String("session", "", "target session id")
+		arg, rest := splitPositional(args)
+		_ = fs.Parse(rest)
+		on, err := parseOnOff(arg)
+		if err != nil {
+			return errors.New("usage: shuffle on|off [--session ID]")
+		}
+		return sendCommand(g, map[string]any{"session_id": *session, "command": model.CmdSetShuffle, "shuffle": on})
 	case "watch":
 		return cmdWatch(g)
 	case "jump":
@@ -937,4 +948,15 @@ func splitPlayItemsArgs(args []string) (ids, flags []string) {
 		ids = append(ids, args[i])
 	}
 	return ids, flags
+}
+
+// parseOnOff parses on/off (also true/false, yes/no, 1/0).
+func parseOnOff(s string) (bool, error) {
+	switch strings.ToLower(s) {
+	case "on", "true", "yes", "1":
+		return true, nil
+	case "off", "false", "no", "0":
+		return false, nil
+	}
+	return false, fmt.Errorf("want on or off, got %q", s)
 }

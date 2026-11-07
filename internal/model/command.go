@@ -15,6 +15,8 @@ const (
 	CmdSeek CommandName = "seek"
 	// CmdSetVolume sets the volume to Volume (0.0–1.0).
 	CmdSetVolume CommandName = "set_volume"
+	// CmdSetShuffle switches the player's own shuffle mode on or off (Shuffle).
+	CmdSetShuffle CommandName = "set_shuffle"
 	// CmdQueueJump plays the queue item at Index (see sessions.queue).
 	CmdQueueJump CommandName = "queue_jump"
 	// CmdPlayItems plays tracks, albums or playlists (ItemIDs) now, next or
@@ -41,7 +43,8 @@ type Command struct {
 	Index      *int        `json:"index,omitempty"`
 	ItemIDs    []string    `json:"item_ids,omitempty"`
 	Mode       string      `json:"mode,omitempty"`
-	// Shuffle (play_items only) plays the items in random order.
+	// Shuffle: for play_items, play the items in random order; for
+	// set_shuffle, the shuffle mode to set.
 	Shuffle *bool `json:"shuffle,omitempty"`
 }
 
@@ -67,6 +70,8 @@ func (c Command) RequiredCapability() (Capability, bool) {
 		return CapSeek, true
 	case CmdSetVolume:
 		return CapVolume, true
+	case CmdSetShuffle:
+		return CapShuffle, true
 	case CmdQueueJump:
 		return CapQueueJump, true
 	case CmdPlayItems:
@@ -98,6 +103,14 @@ func (c Command) Validate() error {
 		if *c.Volume < 0 || *c.Volume > 1.5 {
 			return Errorf(ErrInvalidArgument, "volume must be between 0.0 and 1.5")
 		}
+	case CmdSetShuffle:
+		if c.Shuffle == nil {
+			return Errorf(ErrInvalidArgument, "set_shuffle requires shuffle (true or false)")
+		}
+		if c.PositionMS != nil || c.OffsetMS != nil || c.Volume != nil || c.Index != nil || c.ItemIDs != nil || c.Mode != "" {
+			return Errorf(ErrInvalidArgument, "set_shuffle only takes shuffle")
+		}
+		return nil
 	case CmdQueueJump:
 		if c.Index == nil || *c.Index < 0 {
 			return Errorf(ErrInvalidArgument, "queue_jump requires index >= 0")

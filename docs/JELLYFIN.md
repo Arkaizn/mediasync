@@ -17,6 +17,7 @@ mock server in `internal/testutil/fakejellyfin` reproduces it, and
 | Sessions | `GET /Sessions` | All sessions visible to the user (admins see everyone; mediasync filters to the logged-in user unless `all_users`). |
 | Playstate | `POST /Sessions/{id}/Playing/{Pause\|Unpause\|PlayPause\|Stop\|NextTrack\|PreviousTrack\|Seek}` | `Seek` takes `?seekPositionTicks=` (1 tick = 100 ns). Unknown command → 400; unknown session → 404; otherwise 204. |
 | Volume | `POST /Sessions/{id}/Command` `{"Name":"SetVolume","Arguments":{"Volume":"0–100"}}` | 204. |
+| Shuffle mode | `POST /Sessions/{id}/Command` `{"Name":"SetShuffleQueue","Arguments":{"ShuffleMode":"Shuffle"\|"Sorted"}}` | 204; delivered as `GeneralCommand` with the argument (verified on 12.4.0). Advertised (`shuffle`) only if `SupportedCommands` contains `SetShuffleQueue`; verified through `PlayState.PlaybackOrder` (`Shuffle`/`Default`). **Finamp declares `SetShuffleQueue` but its handler ignores it** (Finamp 1.0.1 source), so `set_shuffle` stays `acknowledged` there. |
 | Logout | `POST /Sessions/Logout` | Revokes the calling token. |
 | Artwork | `GET /Items/{id}/Images/Primary?tag=…` | Served **without authentication**, so artwork URLs carry no token. |
 

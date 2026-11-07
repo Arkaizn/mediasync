@@ -22,3 +22,16 @@ func TestSplitPlayItemsArgs(t *testing.T) {
 		}
 	}
 }
+
+func TestParseOnOff(t *testing.T) {
+	for in, want := range map[string]bool{"on": true, "ON": true, "true": true, "1": true, "off": false, "no": false, "0": false} {
+		if got, err := parseOnOff(in); err != nil || got != want {
+			t.Errorf("%q: %v %v", in, got, err)
+		}
+	}
+	for _, in := range []string{"", "maybe", "2"} {
+		if _, err := parseOnOff(in); err == nil {
+			t.Errorf("%q accepted", in)
+		}
+	}
+}

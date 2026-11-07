@@ -72,6 +72,8 @@ type Client struct {
 	// track (paused at 0:00 while the new one loads), so the server never
 	// learns about the new track.
 	StaleTrackReports bool
+	// Shuffled is the client's shuffle mode (PlayState.PlaybackOrder).
+	Shuffled bool
 	// Playing is the item the client really plays (differs from ItemID with
 	// StaleTrackReports).
 	Playing string
@@ -429,10 +431,19 @@ func (s *Server) command(w http.ResponseWriter, r *http.Request, rest string) {
 			Arguments map[string]string
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		s.deliver(c, body.Name+"("+body.Arguments["Volume"]+")", nil)
-		if c.Controllable && c.ApplyCommands && body.Name == "SetVolume" {
-			if v, err := strconv.Atoi(body.Arguments["Volume"]); err == nil {
-				c.Volume = v
+		arg := body.Arguments["Volume"]
+		if body.Name == "SetShuffleQueue" {
+			arg = body.Arguments["ShuffleMode"]
+		}
+		s.deliver(c, body.Name+"("+arg+")", nil)
+		if c.Controllable && c.ApplyCommands {
+			switch body.Name {
+			case "SetVolume":
+				if v, err := strconv.Atoi(body.Arguments["Volume"]); err == nil {
+					c.Volume = v
+				}
+			case "SetShuffleQueue":
+				c.Shuffled = body.Arguments["ShuffleMode"] == "Shuffle"
 			}
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -479,6 +490,13 @@ func (s *Server) deliver(c *Client, cmd string, q map[string][]string) {
 	c.LastCheckIn = now
 }
 
+func playbackOrder(shuffled bool) string {
+	if shuffled {
+		return "Shuffle"
+	}
+	return "Default"
+}
+
 func (s *Server) sessionsJSON() []map[string]any {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -502,7 +520,7 @@ func (s *Server) sessionsJSON() []map[string]any {
 			"LastPlaybackCheckIn": c.LastCheckIn.Format(time.RFC3339Nano),
 			"PlayState": map[string]any{
 				"PositionTicks": c.PositionTicks, "CanSeek": c.CanSeek, "IsPaused": c.Paused, "IsMuted": false,
-				"VolumeLevel": c.Volume, "RepeatMode": "RepeatNone", "PlaybackOrder": "Default", "PlayMethod": "DirectPlay",
+				"VolumeLevel": c.Volume, "RepeatMode": "RepeatNone", "PlaybackOrder": playbackOrder(c.Shuffled), "PlayMethod": "DirectPlay",
 			},
 		}
 		if !c.Stopped && c.ItemID != "" {

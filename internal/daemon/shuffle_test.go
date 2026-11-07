@@ -70,3 +70,26 @@ func TestEndToEndPlayItemsShuffle(t *testing.T) {
 		}
 	}
 }
+
+func TestEndToEndSetShuffleOnLocalPlayer(t *testing.T) {
+	h := newHarness(t, false, nil)
+	h.player(feishinOpts())
+	c := h.client()
+	waitList(t, c, nil, "feishin with shuffle", func(s snap) bool {
+		for _, x := range s.Sessions {
+			if x.ID == "mpris:Feishin" && x.Has(model.CapShuffle) {
+				return true
+			}
+		}
+		return false
+	})
+	for _, want := range []bool{true, false} {
+		res := call[model.CommandResult](t, c, "player.command", map[string]any{"session_id": "mpris:Feishin", "command": "set_shuffle", "shuffle": want})
+		if res.Outcome != model.OutcomeVerified || res.Session == nil || res.Session.Playback.Shuffle == nil || *res.Session.Playback.Shuffle != want {
+			t.Errorf("set_shuffle %v: %+v", want, res)
+		}
+	}
+	if e := callErr(t, c, "player.command", map[string]any{"session_id": "mpris:Feishin", "command": "set_shuffle"}); e == nil || e.Code != "invalid_argument" {
+		t.Errorf("set_shuffle without shuffle: %+v", e)
+	}
+}
