@@ -42,8 +42,9 @@ Playback (default target: the selected session):
   play | pause | toggle | stop | next | previous [--session ID]
   seek POSITION [--session ID] POSITION: 90, 1:30, 90s, +10s, -5s
   volume LEVEL [--session ID]  LEVEL: 0-100 (percent) or 0.0-1.0
+  shuffle on|off [--session ID] switch the player's shuffle mode
   jump INDEX [--session ID]    play queue item INDEX (see "queue")
-  play-items ID... [--mode now|next|last] [--session ID]
+  play-items ID... [--mode now|next|last] [--shuffle] [--session ID]
                                play tracks, albums or playlists by id
 
 Media:
@@ -252,6 +253,16 @@ func runCommand(g globals, cmd string, args []string) error {
 			return err
 		}
 		return sendCommand(g, map[string]any{"session_id": *session, "command": model.CmdSetVolume, "volume": v})
+	case "shuffle":
+		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
+		session := fs.String("session", "", "target session id")
+		arg, rest := splitPositional(args)
+		_ = fs.Parse(rest)
+		on, err := parseOnOff(arg)
+		if err != nil {
+			return errors.New("usage: shuffle on|off [--session ID]")
+		}
+		return sendCommand(g, map[string]any{"session_id": *session, "command": model.CmdSetShuffle, "shuffle": on})
 	case "watch":
 		return cmdWatch(g)
 	case "jump":
@@ -268,24 +279,17 @@ func runCommand(g globals, cmd string, args []string) error {
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 		session := fs.String("session", "", "target session id")
 		mode := fs.String("mode", "now", "now, next or last")
-		var ids []string
-		var rest []string
-		for i := 0; i < len(args); i++ {
-			if strings.HasPrefix(args[i], "--") {
-				rest = append(rest, args[i])
-				if !strings.Contains(args[i], "=") && i+1 < len(args) {
-					rest = append(rest, args[i+1])
-					i++
-				}
-				continue
-			}
-			ids = append(ids, args[i])
-		}
+		shuffle := fs.Bool("shuffle", false, "play the items in random order")
+		ids, rest := splitPlayItemsArgs(args)
 		_ = fs.Parse(rest)
 		if len(ids) == 0 {
-			return errors.New("usage: play-items ID... [--mode now|next|last] [--session ID]")
+			return errors.New("usage: play-items ID... [--mode now|next|last] [--shuffle] [--session ID]")
 		}
-		return sendCommand(g, map[string]any{"session_id": *session, "command": model.CmdPlayItems, "item_ids": ids, "mode": *mode})
+		params := map[string]any{"session_id": *session, "command": model.CmdPlayItems, "item_ids": ids, "mode": *mode}
+		if *shuffle {
+			params["shuffle"] = true
+		}
+		return sendCommand(g, params)
 	case "queue":
 		id, err := sessionOrSelected(g, args)
 		if err != nil {
@@ -926,4 +930,33 @@ func sessionOrSelected(g globals, args []string) (string, error) {
 		return "", errors.New("no session selected; pass --session ID")
 	}
 	return sel.Session.ID, nil
+}
+
+// splitPlayItemsArgs separates item ids from flags for play-items, where
+// ids and flags may be mixed. Flags take a value ("--mode next" or
+// "--mode=next"), except the boolean --shuffle.
+func splitPlayItemsArgs(args []string) (ids, flags []string) {
+	for i := 0; i < len(args); i++ {
+		if strings.HasPrefix(args[i], "--") {
+			flags = append(flags, args[i])
+			if !strings.Contains(args[i], "=") && args[i] != "--shuffle" && i+1 < len(args) {
+				flags = append(flags, args[i+1])
+				i++
+			}
+			continue
+		}
+		ids = append(ids, args[i])
+	}
+	return ids, flags
+}
+
+// parseOnOff parses on/off (also true/false, yes/no, 1/0).
+func parseOnOff(s string) (bool, error) {
+	switch strings.ToLower(s) {
+	case "on", "true", "yes", "1":
+		return true, nil
+	case "off", "false", "no", "0":
+		return false, nil
+	}
+	return false, fmt.Errorf("want on or off, got %q", s)
 }

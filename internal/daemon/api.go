@@ -136,6 +136,7 @@ type commandParams struct {
 	Index      *int              `json:"index"`
 	ItemIDs    []string          `json:"item_ids"`
 	Mode       string            `json:"mode"`
+	Shuffle    *bool             `json:"shuffle"`
 }
 
 func (s *Service) apiPlayerCommand(ctx context.Context, _ *ipc.Conn, raw json.RawMessage) (any, error) {
@@ -147,7 +148,7 @@ func (s *Service) apiPlayerCommand(ctx context.Context, _ *ipc.Conn, raw json.Ra
 		return nil, ipc.InvalidParams("command is required")
 	}
 	return s.engine.Command(ctx, p.SessionID, model.Command{Name: p.Command, PositionMS: p.PositionMS, OffsetMS: p.OffsetMS,
-		Volume: p.Volume, Index: p.Index, ItemIDs: p.ItemIDs, Mode: p.Mode})
+		Volume: p.Volume, Index: p.Index, ItemIDs: p.ItemIDs, Mode: p.Mode, Shuffle: p.Shuffle})
 }
 
 // clientSub tracks one connection's subscription and the set of sessions

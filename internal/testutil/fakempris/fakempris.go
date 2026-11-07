@@ -45,6 +45,9 @@ type Options struct {
 	// Volume, if non-nil, exposes the Volume property.
 	Volume         *float64
 	VolumeReadOnly bool
+	// NoShuffle leaves out the (optional) Shuffle property;
+	// ShuffleReadOnly exposes it read-only.
+	NoShuffle, ShuffleReadOnly bool
 	// OmitMetadata leaves out the Metadata property entirely.
 	OmitMetadata bool
 	// RawMetadata, if set, replaces generated metadata (to test malformed data).
@@ -113,7 +116,9 @@ func Start(conn *dbus.Conn, opts Options) (*Player, error) {
 		"CanGoPrevious":  {Value: opts.CanGoPrevious, Emit: emitTrue},
 		"CanSeek":        {Value: opts.CanSeek, Emit: emitTrue},
 		"LoopStatus":     {Value: "None", Writable: true, Emit: emitTrue},
-		"Shuffle":        {Value: false, Writable: true, Emit: emitTrue},
+	}
+	if !opts.NoShuffle {
+		playerProps["Shuffle"] = &fprop{Value: false, Writable: !opts.ShuffleReadOnly, Emit: emitTrue}
 	}
 	if !opts.OmitMetadata {
 		playerProps["Metadata"] = &fprop{Value: p.metadataLocked(), Emit: emitTrue}

@@ -851,3 +851,57 @@ func TestMediaServerItemID(t *testing.T) {
 		}
 	}
 }
+
+func TestPlayItemsShuffleCapabilityAndLinkedRouting(t *testing.T) {
+	e := newEngine(t, nil)
+	local := pt.Session("mpris:feishin", model.OriginLocal, "Track 1", model.StatePlaying, model.AllCapabilities[:8]...)
+	local.Track.Artists = []string{"Artist A"}
+	local.Player.BusName = model.Ptr("org.mpris.MediaPlayer2.feishin")
+	lf := addFake(t, e, "mpris", "mpris", model.OriginLocal, local)
+	// The linked remote session supports play_items but not the shuffled variant.
+	remote := remoteSession("jf:feishin", "Track 1", "mydesk", model.StatePlaying, model.CapPlay, model.CapPlayItems)
+	remote.Track.Artists = []string{"Artist A"}
+	remote.Track.TrackID = model.Ptr("item-1")
+	rf := pt.NewFake("jellyfin:home", "jellyfin", model.OriginRemote)
+	rf.Set(remote)
+	e.AddProvider(rf)
+	rf.WaitReady()
+	waitUntil(t, "linked", func() bool {
+		s, _ := e.Session("mpris:feishin")
+		return len(s.Linked) == 1 && s.Has(model.CapPlayItems)
+	})
+	ctx := context.Background()
+	shuffled := model.Command{Name: model.CmdPlayItems, ItemIDs: []string{"pl1"}, Shuffle: model.Ptr(true)}
+	if s, _ := e.Session("mpris:feishin"); s.Has(model.CapPlayItemsShuffle) {
+		t.Errorf("borrowed play_items_shuffle the remote does not have: %v", s.Capabilities)
+	}
+	for _, id := range []string{"mpris:feishin", "jf:feishin"} {
+		if _, err := e.Command(ctx, id, shuffled); model.CodeOf(err) != model.ErrUnsupported {
+			t.Errorf("%s: shuffled play_items without the capability: %v", id, err)
+		}
+	}
+	// "shuffle": false is plain play_items.
+	if _, err := e.Command(ctx, "mpris:feishin", model.Command{Name: model.CmdPlayItems, ItemIDs: []string{"pl1"}, Shuffle: model.Ptr(false)}); err != nil {
+		t.Errorf("shuffle=false: %v", err)
+	}
+	if len(lf.Calls()) != 0 || len(rf.Calls()) != 1 {
+		t.Fatalf("rejected commands must not reach a provider: local=%v remote=%v", lf.Calls(), rf.Calls())
+	}
+
+	// With the capability, the local session borrows it and the shuffled
+	// command is carried out through the remote session, flag included.
+	remote.Capabilities = append(remote.Capabilities, model.CapPlayItemsShuffle)
+	rf.Set(remote)
+	waitUntil(t, "shuffle borrowed", func() bool {
+		s, _ := e.Session("mpris:feishin")
+		return s.Has(model.CapPlayItemsShuffle)
+	})
+	res, err := e.Command(ctx, "mpris:feishin", shuffled)
+	if err != nil || res.ViaSessionID != "jf:feishin" {
+		t.Fatalf("shuffled via linked: %+v %v", res, err)
+	}
+	calls := rf.Calls()
+	if last := calls[len(calls)-1]; last.SessionID != "jf:feishin" || !last.Command.Shuffled() || len(lf.Calls()) != 0 {
+		t.Errorf("routing: %+v local=%v", last, lf.Calls())
+	}
+}

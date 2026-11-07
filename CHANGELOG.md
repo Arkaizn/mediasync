@@ -7,6 +7,22 @@ are versioned separately (see docs/API.md).
 
 ## [Unreleased]
 
+### Added
+- Shuffled playback: `player.command` `play_items` takes `"shuffle": true`
+  (API version 1, additive) and needs the new capability
+  `play_items_shuffle`, advertised wherever Jellyfin's `play_items` is and
+  borrowed by linked local sessions. mediasync expands playlists, albums,
+  artists, genres and folders into tracks, shuffles the whole list, and
+  keeps the URL limit (shuffling before the cut). A shuffled "now" does
+  not start with the track already playing. CLI:
+  `mediasyncctl play-items ID... --shuffle`.
+- `set_shuffle` command (`"shuffle": true|false`) and capability `shuffle`
+  to switch a player's own shuffle mode: MPRIS players with a writable
+  `Shuffle` property, Jellyfin clients that declare `SetShuffleQueue`
+  (`GeneralCommand` with `ShuffleMode` `Shuffle`/`Sorted`, verified on
+  12.4.0). Verified through `playback.shuffle`. CLI:
+  `mediasyncctl shuffle on|off`.
+
 ### Fixed
 - Jellyfin: `play_items` with a large playlist failed with `provider_error`.
   The ids travel in the request URL, and Jellyfin (Kestrel) answers HTTP 414

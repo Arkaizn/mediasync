@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"math/rand/v2"
 	"net/url"
 	"slices"
 	"strings"
@@ -304,12 +305,19 @@ func (p *Provider) Playlists(ctx context.Context) ([]model.Playlist, error) {
 // ServerName returns the configured server name.
 func (p *Provider) ServerName() string { return p.cfg.Name }
 
+// containerTypes are item types the server expands into their tracks when
+// asked to play them (TranslateItemForPlayback).
+var containerTypes = map[string]bool{"MusicAlbum": true, "MusicArtist": true, "MusicGenre": true,
+	"Folder": true, "CollectionFolder": true, "BoxSet": true}
+
 // expandItems turns the requested ids into the id list for a play command.
 // Playlists are expanded here, in playlist order: the server would expand
-// them too, but reorders them (verified on 12.2). Albums, artists and tracks
-// are passed through. Unknown ids are an error (the server would accept them
-// silently and send an empty list to the client).
-func (p *Provider) expandItems(ctx context.Context, ids []string) ([]string, error) {
+// them too, but reorders them (verified on 12.2). Albums, artists, genres
+// and folders are passed through for the server to expand, or expanded here
+// with containers (shuffling needs the whole track list). Unknown ids are an
+// error (the server would accept them silently and send an empty list to the
+// client).
+func (p *Provider) expandItems(ctx context.Context, ids []string, containers bool) ([]string, error) {
 	uid, err := p.ensureUserID(ctx)
 	if err != nil {
 		return nil, err
@@ -338,6 +346,16 @@ func (p *Provider) expandItems(ctx context.Context, ids []string) ([]string, err
 			}
 			for _, e := range entries {
 				out = append(out, e.ID)
+			}
+			continue
+		}
+		if containers && containerTypes[it.Type] {
+			tracks, err := p.client.ContainerTracks(ctx, uid, it, maxExpandTracks+1)
+			if err != nil {
+				return nil, err
+			}
+			for _, tr := range tracks {
+				out = append(out, tr.ID)
 			}
 			continue
 		}
@@ -417,10 +435,32 @@ func (p *Provider) sendPlay(ctx context.Context, jfSessionID, playCommand string
 	}
 }
 
-func (p *Provider) playItems(ctx context.Context, jfSessionID string, cmd model.Command) error {
-	ids, err := p.expandItems(ctx, cmd.ItemIDs)
+// shuffleIDs puts ids into random order (Fisher–Yates).
+func shuffleIDs(ids []string) {
+	rand.Shuffle(len(ids), func(i, j int) { ids[i], ids[j] = ids[j], ids[i] })
+}
+
+func (p *Provider) playItems(ctx context.Context, si SessionInfo, cmd model.Command) error {
+	jfSessionID := si.ID
+	ids, err := p.expandItems(ctx, cmd.ItemIDs, cmd.Shuffled())
 	if err != nil {
 		return err
+	}
+	if cmd.Shuffled() {
+		// Shuffle the whole list first, so that a list cut to the URL
+		// budget is a random part of it, not the beginning.
+		shuffleIDs(ids)
+		// A shuffled "play now" should not start with the track that is
+		// already playing (it would look as if nothing happened).
+		if cmd.PlayMode() == model.PlayModeNow && len(ids) > 1 && si.NowPlayingItem != nil && strings.EqualFold(ids[0], si.NowPlayingItem.ID) {
+			if j := slices.IndexFunc(ids, func(id string) bool { return !strings.EqualFold(id, ids[0]) }); j > 0 {
+				k := j + rand.IntN(len(ids)-j)
+				if strings.EqualFold(ids[k], ids[0]) { // a duplicate of the current track
+					k = j
+				}
+				ids[0], ids[k] = ids[k], ids[0]
+			}
+		}
 	}
 	pc := map[string]string{model.PlayModeNow: "PlayNow", model.PlayModeNext: "PlayNext", model.PlayModeLast: "PlayLast"}[cmd.PlayMode()]
 	return p.sendPlay(ctx, jfSessionID, pc, ids, 0, false)

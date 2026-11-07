@@ -2,6 +2,7 @@ package mpris
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"slices"
@@ -101,7 +102,7 @@ func TestDiscoveryOfExistingAndNewPlayers(t *testing.T) {
 	if s.Playback.State != model.StatePaused {
 		t.Errorf("state %s", s.Playback.State)
 	}
-	want := []model.Capability{model.CapPlay, model.CapPause, model.CapPlayPause, model.CapStop, model.CapNext, model.CapPrevious, model.CapSeek, model.CapVolume}
+	want := []model.Capability{model.CapPlay, model.CapPause, model.CapPlayPause, model.CapStop, model.CapNext, model.CapPrevious, model.CapSeek, model.CapVolume, model.CapShuffle}
 	if !slices.Equal(s.Capabilities, want) {
 		t.Errorf("caps %v", s.Capabilities)
 	}
@@ -230,6 +231,52 @@ func TestReadOnlyVolumeIsNotACapability(t *testing.T) {
 	}
 	if s.Playback.Volume == nil {
 		t.Error("volume value should still be reported")
+	}
+}
+
+func TestSetShuffle(t *testing.T) {
+	e := start(t, Config{}, nil)
+	newPlayer(t, e.bus, fakempris.FullCaps("sh"))
+	s := e.sink.WaitSession(t, "mpris:sh", wait, "sh", nil)
+	if !s.Has(model.CapShuffle) || s.Playback.Shuffle == nil || *s.Playback.Shuffle {
+		t.Fatalf("caps %v shuffle %v", s.Capabilities, s.Playback.Shuffle)
+	}
+	ctx := context.Background()
+	for _, want := range []bool{true, false} {
+		if err := e.prov.Command(ctx, "mpris:sh", model.Command{Name: model.CmdSetShuffle, Shuffle: model.Ptr(want)}); err != nil {
+			t.Fatal(err)
+		}
+		e.sink.WaitSession(t, "mpris:sh", wait, fmt.Sprintf("shuffle=%v", want), func(s model.Session) bool {
+			return s.Playback.Shuffle != nil && *s.Playback.Shuffle == want
+		})
+	}
+}
+
+func TestShuffleCapabilityNeedsAWritableProperty(t *testing.T) {
+	e := start(t, Config{}, nil)
+	none := fakempris.FullCaps("noshuf")
+	none.NoShuffle = true
+	ro := fakempris.FullCaps("roshuf")
+	ro.ShuffleReadOnly = true
+	viewOnly := fakempris.FullCaps("viewshuf")
+	viewOnly.CanControl = false
+	for _, o := range []fakempris.Options{none, ro, viewOnly} {
+		newPlayer(t, e.bus, o)
+		id := "mpris:" + o.Name
+		s := e.sink.WaitSession(t, id, wait, o.Name, nil)
+		if s.Has(model.CapShuffle) {
+			t.Errorf("%s: shuffle advertised: %v", o.Name, s.Capabilities)
+		}
+		err := e.prov.Command(context.Background(), id, model.Command{Name: model.CmdSetShuffle, Shuffle: model.Ptr(true)})
+		if model.CodeOf(err) != model.ErrUnsupported {
+			t.Errorf("%s: set_shuffle must be refused: %v", o.Name, err)
+		}
+		if s, _ := e.sink.Session(id); s.Playback.Shuffle != nil && *s.Playback.Shuffle {
+			t.Errorf("%s: shuffle changed although the command was refused", o.Name)
+		}
+	}
+	if s := e.sink.WaitSession(t, "mpris:roshuf", wait, "ro", nil); s.Playback.Shuffle == nil {
+		t.Error("a read-only Shuffle value should still be reported")
 	}
 }
 

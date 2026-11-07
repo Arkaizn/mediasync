@@ -116,7 +116,7 @@ Useful commands:
 mediasyncctl status                          # selected session + provider health
 mediasyncctl toggle                          # play/pause the selected session
 mediasyncctl next --session ID               # control a specific session
-mediasyncctl seek +10s | seek 1:30 | volume 40
+mediasyncctl seek +10s | seek 1:30 | volume 40 | shuffle on
 mediasyncctl select ID | select auto
 mediasyncctl settings set mode=remote_only   # or local_only / combined
 mediasyncctl settings set remote_enabled=false
@@ -124,7 +124,7 @@ mediasyncctl watch                           # live view (add --json for NDJSON)
 mediasyncctl diag                            # diagnostics
 mediasyncctl jellyfin check                  # why is my phone view-only?
 mediasyncctl queue | lyrics | playlists      # queue, lyrics, playlists
-mediasyncctl play-items PLAYLIST_ID --session ID
+mediasyncctl play-items PLAYLIST_ID --session ID [--shuffle]
 ```
 
 ## Using the API

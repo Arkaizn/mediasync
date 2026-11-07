@@ -144,7 +144,7 @@ func TestUnauthenticatedThenLoginDiscoversSessions(t *testing.T) {
 		t.Errorf("playback %+v", s.Playback)
 	}
 	wantCaps := []model.Capability{model.CapPlay, model.CapPause, model.CapPlayPause, model.CapStop, model.CapNext,
-		model.CapPrevious, model.CapSeek, model.CapVolume, model.CapPlayItems}
+		model.CapPrevious, model.CapSeek, model.CapVolume, model.CapPlayItems, model.CapPlayItemsShuffle}
 	if !slices.Equal(s.Capabilities, wantCaps) {
 		t.Errorf("caps %v", s.Capabilities)
 	}

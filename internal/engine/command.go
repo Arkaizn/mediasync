@@ -252,6 +252,11 @@ func expectation(before model.Session, cmd model.Command, issued time.Time) pred
 			// late (Finamp) report the previous track at 0:00 instead.
 			return s.QueueRevision != beforeRev
 		}
+	case model.CmdSetShuffle:
+		want := *cmd.Shuffle
+		return func(s *model.Session, _ time.Time) bool {
+			return s != nil && s.Playback.Shuffle != nil && *s.Playback.Shuffle == want
+		}
 	case model.CmdSetVolume:
 		want := *cmd.Volume
 		return func(s *model.Session, _ time.Time) bool {

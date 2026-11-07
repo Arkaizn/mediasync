@@ -18,7 +18,7 @@ type LyricsFallback interface {
 
 // linkedCaps are capabilities a local player can borrow from the remote
 // session it is linked to (the same playback seen through the server).
-var linkedCaps = []model.Capability{model.CapQueue, model.CapLyrics, model.CapQueueJump, model.CapPlayItems}
+var linkedCaps = []model.Capability{model.CapQueue, model.CapLyrics, model.CapQueueJump, model.CapPlayItems, model.CapPlayItemsShuffle}
 
 func keepCaps(caps, keep []model.Capability) []model.Capability {
 	out := []model.Capability{}
