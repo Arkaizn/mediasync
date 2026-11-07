@@ -47,8 +47,10 @@ pause → jellyfin:home:1e54ee7457f628fd: verified
 
 ## Installation
 
-**Arch Linux:** `yay -S mediasync-git` (AUR; see [packaging/aur](packaging/aur/README.md)),
-then `systemctl --user enable --now mediasyncd`.
+**Arch Linux:** `yay -S mediasync` (AUR, latest release; `mediasync-git` for
+the latest commit; see [packaging/aur](packaging/aur/README.md)), then
+`systemctl --user enable --now mediasyncd`. Updates come with a normal `yay`,
+and the service restarts itself on the new version.
 
 **From source:**
 
@@ -67,9 +69,9 @@ mediasyncctl status
 call `~/.local/bin/mediasyncctl` directly. The service itself is not
 affected because the unit uses the full path.
 
-**Updating:** `git pull && make install && systemctl --user restart mediasyncd`.
-The restart matters: `enable --now` and `mediasyncctl reload` do not
-replace an already running service.
+**Updating:** `git pull && make install`. A running service notices that
+its executable was replaced and restarts itself on the new version within
+a few seconds (only when started by systemd).
 
 `make install PREFIX=/usr/local` installs elsewhere. The unit file is
 generated from `contrib/systemd/mediasyncd.service.in`. The example config is

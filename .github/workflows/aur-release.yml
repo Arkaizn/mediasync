@@ -1,0 +1,80 @@
+name: AUR release
+
+# Pushing a release tag (vX.Y.Z) publishes that version as the AUR package
+# "mediasync", so a plain `yay` on every system picks it up.
+# Needs the repository secret AUR_SSH_PRIVATE_KEY: a private key whose public
+# key is in the AUR account (My Account -> SSH Public Key).
+
+on:
+  push:
+    tags: ['v[0-9]*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aur-release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    steps:
+      - name: Install tools
+        run: pacman -Syu --noconfirm --needed git openssh
+
+      - uses: actions/checkout@v4
+
+      - name: Set version and checksum
+        id: pkg
+        run: |
+          set -euo pipefail
+          ver="${GITHUB_REF_NAME#v}"
+          case "$ver" in *[!0-9A-Za-z._]*|"") echo "::error::tag $GITHUB_REF_NAME is not a valid pkgver"; exit 1;; esac
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          sum="$(curl -fsSL --retry 5 --retry-all-errors "$url" | sha256sum | cut -d' ' -f1)"
+          cd packaging/aur/mediasync
+          sed -i "s/^pkgver=.*/pkgver=${ver}/; s/^pkgrel=.*/pkgrel=1/; s/^sha256sums=.*/sha256sums=('${sum}')/" PKGBUILD
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
+      - name: Check the PKGBUILD and generate .SRCINFO
+        run: |
+          set -euo pipefail
+          useradd -m builder
+          cp -r packaging/aur/mediasync /home/builder/pkg
+          chown -R builder: /home/builder/pkg
+          # makepkg refuses to run as root.
+          su builder -c 'cd ~/pkg && makepkg --verifysource && makepkg --printsrcinfo > .SRCINFO'
+          cp /home/builder/pkg/.SRCINFO packaging/aur/mediasync/.SRCINFO
+          cat packaging/aur/mediasync/.SRCINFO
+
+      - name: Push to the AUR
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          VERSION: ${{ steps.pkg.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "::error::secret AUR_SSH_PRIVATE_KEY is not set"; exit 1
+          fi
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur && chmod 600 ~/.ssh/aur
+          # Pin the AUR host key (fingerprint published on aur.archlinux.org).
+          ssh-keyscan -t ed25519 aur.archlinux.org > ~/.ssh/known_hosts 2>/dev/null
+          fp="$(ssh-keygen -lf ~/.ssh/known_hosts | awk '{print $2}')"
+          if [ "$fp" != "SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4" ]; then
+            echo "::error::unexpected AUR host key $fp"; exit 1
+          fi
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          git clone ssh://aur@aur.archlinux.org/mediasync.git aur
+          cp packaging/aur/mediasync/PKGBUILD packaging/aur/mediasync/.SRCINFO aur/
+          cd aur
+          git config user.name "Arkaizn"
+          git config user.email "arkaizn@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "AUR package is already at $VERSION"; exit 0
+          fi
+          git commit -m "Update to $VERSION"
+          git push origin HEAD:master

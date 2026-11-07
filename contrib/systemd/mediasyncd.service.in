@@ -13,6 +13,10 @@ ExecStart=@BINDIR@/mediasyncd
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=2
+# mediasyncd exits with 75 after its executable was replaced (package
+# update, make install) so the new version starts without a manual restart.
+RestartForceExitStatus=75
+SuccessExitStatus=75
 
 # Hardening that works in user service managers.
 UMask=0077

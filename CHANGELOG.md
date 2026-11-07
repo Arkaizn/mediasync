@@ -7,8 +7,16 @@ are versioned separately (see docs/API.md).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-11-07
+
 ### Added
-- AUR package `mediasync-git` (`packaging/aur/`).
+- AUR packages `mediasync` (releases, published automatically when a `v*`
+  tag is pushed, so a plain `yay` updates it) and `mediasync-git`
+  (`packaging/aur/`).
+- The service restarts itself after its executable was replaced (package
+  update, `make install`): it exits with status 75 and the systemd unit
+  starts the new version (`RestartForceExitStatus=75`). Only when started
+  by systemd.
 - Queue, lyrics and playlists (API version 1, additive): `sessions.queue`,
   `lyrics.get`, `library.playlists`, `player.command` `queue_jump` and
   `play_items`, the `queue.changed` event and the `queue`, `queue_jump`,

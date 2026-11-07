@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync/atomic"
 	"syscall"
+	"time"
 
 	"github.com/arkaizn/mediasync/internal/config"
 	"github.com/arkaizn/mediasync/internal/daemon"
@@ -90,8 +92,35 @@ func run() int {
 		}
 	}()
 
+	// After a package update (or make install) replaced the executable,
+	// exit so systemd starts the new version. Only under systemd: started
+	// by hand, nothing would bring the service back.
+	var updated atomic.Bool
+	if underSystemd() {
+		if path, running, err := runningBinary(); err != nil {
+			log.Warn("cannot watch the executable for updates", "err", err)
+		} else {
+			replaced := watchReplaced(ctx, path, running, 5*time.Second)
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithCancel(ctx)
+			defer cancel()
+			go func() {
+				select {
+				case <-replaced:
+					log.Info("executable was updated; restarting", "path", path)
+					updated.Store(true)
+					cancel()
+				case <-ctx.Done():
+				}
+			}()
+		}
+	}
+
 	svc.Run(ctx)
 	sdNotify("STOPPING=1")
 	svc.Close()
+	if updated.Load() {
+		return exitUpdated
+	}
 	return 0
 }
