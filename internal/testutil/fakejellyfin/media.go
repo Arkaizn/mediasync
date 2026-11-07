@@ -214,7 +214,13 @@ func (s *Server) play(w http.ResponseWriter, r *http.Request, c *Client, ok bool
 		if start >= len(ids) {
 			start = 0
 		}
+		if c.StaleTrackReports {
+			// Plays the new track, reports the old one (Finamp, see Client).
+			c.Playing, c.PositionTicks, c.Paused = ids[start], 0, true
+			break
+		}
 		s.setCurrent(c, ids[start])
+		c.PlaylistItemID = ids[0] // Finamp reports its queue source's id
 		c.Queue = nil
 		for _, id := range ids[start+1:] {
 			c.Queue = append(c.Queue, QueueEntry{ID: id, PlaylistItemID: "queue"})
@@ -234,7 +240,7 @@ func (s *Server) play(w http.ResponseWriter, r *http.Request, c *Client, ok bool
 
 func (s *Server) setCurrent(c *Client, id string) {
 	it := s.items[id]
-	c.ItemID = id
+	c.ItemID, c.Playing = id, id
 	c.PositionTicks = 0
 	c.Stopped = false
 	if it != nil {

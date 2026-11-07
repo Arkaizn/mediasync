@@ -1,7 +1,8 @@
 # Jellyfin integration notes
 
 The Jellyfin provider was built against, and tested with, **Jellyfin Server
-12.2.0** (`jellyfin/jellyfin:12.2`, released 2026-10-05). The behaviour
+12.2.0** (`jellyfin/jellyfin:12.2`, released 2026-10-05); the queue, play
+command and URL-length behaviour below was re-checked on **12.4.0**. The behaviour
 below was checked on a real server, not assumed from documentation. The
 mock server in `internal/testutil/fakejellyfin` reproduces it, and
 `test/integration` re-checks it against a real server.
@@ -80,10 +81,10 @@ Observed facts that shape the provider:
 
 | Purpose | Request | Observed |
 |---------|---------|----------|
-| Queue | `NowPlayingQueue` in `GET /Sessions` | **12.2: always empty during playback.** In 12.x `SessionManager` only stores the reported queue in `OnPlaybackStopped`; 10.10.7 stores it on start/progress and also fills `NowPlayingQueueFullItems` (absent on 12.2). 10.10 ignores empty queue reports. |
+| Queue | `NowPlayingQueue` in `GET /Sessions` | **12.x (12.2.0, 12.4.0): only the queue sent with the client's last *stop* report.** `SessionManager` stores it in `OnPlaybackStopped` only; start and progress reports do not change it. It is empty until the client's first track change, and then a snapshot from the last one (Finamp sends a stop report with its queue on every track change, so it is current right after one and frozen until the next). 10.10.7 stores it on start/progress and also fills `NowPlayingQueueFullItems` (absent on 12.x). 10.10 ignores empty queue reports. |
 | Lyrics | `GET /Audio/{itemId}/Lyrics` | `{"Lyrics":[{"Text","Start"(ticks)?}]}`; `Start` missing for unsynced lyrics (`.txt`); 404 when there are none (also for unknown items); authentication required. `NowPlayingItem.HasLyrics` tells in advance. |
 | Playlists | `GET /Items?recursive=true&includeItemTypes=Playlist&fields=ChildCount` | `GET /Playlists` is 405; entries via `GET /Playlists/{id}/Items` in playlist order. |
-| Play | `POST /Sessions/{id}/Playing?playCommand=PlayNow\|PlayNext\|PlayLast&itemIds=…&startIndex=` | Delivered as WebSocket message `Play` `{ItemIds, PlayCommand, StartIndex}`. The server expands albums and playlists into tracks, but **reorders playlists**; unknown ids give an empty `ItemIds` with 204; clients without audio support or remote control also get 204. Invalid `playCommand` → 400. |
+| Play | `POST /Sessions/{id}/Playing?playCommand=PlayNow\|PlayNext\|PlayLast&itemIds=…&startIndex=` | Delivered as WebSocket message `Play` `{ItemIds, PlayCommand, StartIndex}`. The server expands albums and playlists into tracks, but **reorders playlists**; unknown ids give an empty `ItemIds` with 204; clients without audio support or remote control also get 204. Invalid `playCommand` → 400. **The ids are accepted only in the query string**, and Kestrel rejects request lines over 8 KiB with **HTTP 414** (12.4.0: 230 ids = 8127 bytes pass, 240 ids = 8477 bytes fail; a 249-track playlist fails). Reverse proxies have similar limits (nginx `large_client_header_buffers 8k`, also 414) or smaller ones. |
 
 Clients:
 - **Finamp** reports only the *upcoming* tracks as `NowPlayingQueue` (its
@@ -92,6 +93,37 @@ Clients:
   mediasync puts the current track in front. Finamp handles `PlayNow`
   (with `StartIndex`), `PlayNext` and `PlayLast`, and fetches the ids as
   audio items, so it relies on the server's album expansion.
+- **Long playlists:** mediasync keeps the request target of a play command
+  under 6000 bytes (about 170 tracks with Jellyfin's 32-character ids) and
+  sends the part that fits: for `play_items` the beginning of the list, for
+  `queue_jump` the target track and what follows it (then what precedes
+  it), with a matching `startIndex`. It does not send the rest with
+  follow-up `PlayLast` commands: Finamp handles `Play` messages
+  concurrently and fetches `PlayNext`/`PlayLast` items sorted by
+  `IndexNumber`, which would scramble the playlist order. The client also
+  fetches the ids again (Finamp: `GET /Items?ids=…`, the same length
+  limit), which is why the budget stays well below 8 KiB. If a stricter
+  proxy still rejects the request (414, or 400 on a long URL), mediasync
+  retries with half the items, up to three times, then fails with
+  `provider_error` "playlist too large for one command" and the HTTP
+  status in the error data.
+- **Finamp reports a remotely started track late (Finamp 1.0.1, from its
+  source).** Any remote command (`Playstate` or `Play`) puts Finamp into a
+  "controlled" mode for 90 seconds (`playOnStaleDelay`). In that mode its
+  playback listener only sends progress reports, at most one per second,
+  for the track it last recorded as current, and skips the step that
+  records a new current track. After a remote `PlayNow` (`play_items`
+  "now", `queue_jump`) or `NextTrack`, Finamp plays the new track but the
+  server is told the previous track id, with the new track's position and
+  state (often paused at 0:00 while it loads). The server only shows what
+  the client reports, so `GET /Sessions` keeps the old `NowPlayingItem`
+  until the 90 seconds have passed without a command and the next
+  playback event (pause, seek, track change) makes Finamp report again.
+  Finamp uses the same `DeviceId` for its WebSocket and its reports, so no
+  second session appears (nothing is hidden or deduplicated). mediasync
+  does not invent the track: such commands end as `acknowledged`, with a
+  detail saying the player has not reported a new track. The fix belongs
+  in Finamp.
 - **Feishin** (Linux) publishes its lyrics in MPRIS `xesam:asText` as LRC
   and puts the Jellyfin item id into `mpris:trackid`
   (`…/track/<item id>`). It has no MPRIS TrackList (no queue over MPRIS).
@@ -183,4 +215,3 @@ Fix the proxy for the `/socket` path:
   still accepted `api_key`. mediasync never uses that either way.
 - Quick Connect and API keys created in the dashboard: log in with a user
   account instead.
-- Starting playback of a specific item ("play this album on my phone").

@@ -7,6 +7,26 @@ are versioned separately (see docs/API.md).
 
 ## [Unreleased]
 
+### Fixed
+- Jellyfin: `play_items` with a large playlist failed with `provider_error`.
+  The ids travel in the request URL, and Jellyfin (Kestrel) answers HTTP 414
+  above 8 KiB (verified on 12.4.0: a 249-track playlist). Play commands now
+  stay under a 6000-byte budget: long lists are cut (the beginning for
+  `play_items`; for `queue_jump` the target and what follows it), retried
+  with fewer items if a stricter proxy still rejects them, and otherwise
+  fail with "playlist too large for one command" and `http_status` in the
+  error data. The 300-track limit is gone.
+- `play_items` "now" was reported as `verified` when the session showed the
+  previous track at 0:00. Finamp does this after remote commands: for 90 s
+  it keeps reporting the previous track (a Finamp bug, see
+  docs/JELLYFIN.md). Such commands are now `acknowledged`, with a detail
+  saying the player has not reported a new track.
+- "command failed" log lines include the error message and the HTTP status.
+
+### Changed
+- Docs: on Jellyfin 12.x the queue is the one sent with the client's last
+  stop report (re-checked on 12.2.0 and 12.4.0), not "always empty".
+
 ## [0.2.0] — 2026-11-07
 
 ### Added

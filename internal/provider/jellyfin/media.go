@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -18,9 +19,12 @@ const (
 	itemCacheSize   = 4096
 	lyricsCacheSize = 512
 	lyricsCacheTTL  = 30 * time.Minute
-	// maxPlayTracks bounds the expanded track list of one play command (the
-	// ids travel in the request URL).
-	maxPlayTracks = 300
+	// maxExpandTracks bounds playlist expansion. Only the part that fits
+	// into one request URL is sent (see maxPlayRequestTarget).
+	maxExpandTracks = 10000
+	// maxPlayRetries is how often a play command rejected as too long
+	// (a proxy with a smaller limit) is retried with half the items.
+	maxPlayRetries = 3
 )
 
 type cachedLyrics struct {
@@ -342,10 +346,75 @@ func (p *Provider) expandItems(ctx context.Context, ids []string) ([]string, err
 	if len(out) == 0 {
 		return nil, model.Errorf(model.ErrInvalidArgument, "the requested items contain nothing to play")
 	}
-	if len(out) > maxPlayTracks {
-		return nil, model.Errorf(model.ErrInvalidArgument, "too many tracks (%d); at most %d per command", len(out), maxPlayTracks)
+	if len(out) > maxExpandTracks {
+		return nil, model.Errorf(model.ErrInvalidArgument, "too many tracks (%d); at most %d", len(out), maxExpandTracks)
 	}
 	return out, nil
+}
+
+// playWindow returns the part ids[lo:hi] that contains index and fits into
+// budget bytes of query-escaped ids joined by separators of sep bytes. The
+// items from index onwards come first (what plays next matters most), then
+// the ones before it. At least ids[index] is always included.
+func playWindow(ids []string, index, budget, sep int) (lo, hi int) {
+	if len(ids) == 0 {
+		return 0, 0
+	}
+	index = min(max(index, 0), len(ids)-1)
+	cost := func(id string) int { return len(url.QueryEscape(id)) }
+	used := cost(ids[index])
+	lo, hi = index, index+1
+	for hi < len(ids) && used+sep+cost(ids[hi]) <= budget {
+		used += sep + cost(ids[hi])
+		hi++
+	}
+	for lo > 0 && used+sep+cost(ids[lo-1]) <= budget {
+		used += sep + cost(ids[lo-1])
+		lo--
+	}
+	return lo, hi
+}
+
+// sendPlay sends a play command with as many of ids as fit into one request
+// URL, around index (the start index with startAt). Jellyfin only takes the
+// ids in the query string, so long playlists are cut, not split: clients
+// handle follow-up PlayLast commands concurrently and sort them (Finamp
+// fetches PlayNext/PlayLast items sorted by IndexNumber), which would scramble
+// the order.
+func (p *Provider) sendPlay(ctx context.Context, jfSessionID, playCommand string, ids []string, index int, startAt bool) error {
+	budget, sep := p.client.PlayIDBudget(jfSessionID, playCommand)
+	var tooLong *model.Error // the first rejection as too long
+	for attempt := 0; ; attempt++ {
+		lo, hi := playWindow(ids, index, budget, sep)
+		var start *int
+		if startAt {
+			start = model.Ptr(index - lo)
+		}
+		if hi-lo < len(ids) {
+			p.log.Info("sending only part of the items: the request URL would be too long",
+				"command", playCommand, "sent", hi-lo, "total", len(ids), "from", lo)
+		}
+		err := p.client.PlayCommand(ctx, jfSessionID, playCommand, ids[lo:hi], start)
+		if err == nil {
+			return nil
+		}
+		e := model.AsError(err)
+		if e.Data["items"] != nil && tooLong == nil {
+			tooLong = e
+		}
+		if tooLong != nil && e.Data["http_status"] == tooLong.Data["http_status"] {
+			// Still rejected with the same status once the URL is short
+			// (a 400 then is no longer recognisable as "too long").
+			err, e = tooLong, tooLong
+		}
+		if e.Data["items"] == nil || hi-lo <= 1 || attempt >= maxPlayRetries {
+			return err
+		}
+		// Rejected as too long: a proxy with a smaller limit. Retry with fewer.
+		p.log.Info("play command rejected as too long; retrying with fewer items",
+			"items", hi-lo, "http_status", e.Data["http_status"])
+		budget /= 2
+	}
 }
 
 func (p *Provider) playItems(ctx context.Context, jfSessionID string, cmd model.Command) error {
@@ -354,7 +423,7 @@ func (p *Provider) playItems(ctx context.Context, jfSessionID string, cmd model.
 		return err
 	}
 	pc := map[string]string{model.PlayModeNow: "PlayNow", model.PlayModeNext: "PlayNext", model.PlayModeLast: "PlayLast"}[cmd.PlayMode()]
-	return p.client.PlayCommand(ctx, jfSessionID, pc, ids, nil)
+	return p.sendPlay(ctx, jfSessionID, pc, ids, 0, false)
 }
 
 // queueJump plays queue item index. Jellyfin has no "jump" command, so the
@@ -375,11 +444,5 @@ func (p *Provider) queueJump(ctx context.Context, sessionID, jfSessionID string,
 	for _, it := range q.Items {
 		ids = append(ids, it.ItemID)
 	}
-	if len(ids) > maxPlayTracks {
-		// Keep the window around the target within the URL budget.
-		start := max(0, min(index-maxPlayTracks/2, len(ids)-maxPlayTracks))
-		ids = ids[start : start+maxPlayTracks]
-		index -= start
-	}
-	return p.client.PlayCommand(ctx, jfSessionID, "PlayNow", ids, &index)
+	return p.sendPlay(ctx, jfSessionID, "PlayNow", ids, index, true)
 }

@@ -62,10 +62,19 @@ type Client struct {
 	// ["Audio"] for controllable clients, [] otherwise).
 	PlayableTypes []string
 	// Queue is the queue the client reports (Finamp style: upcoming items
-	// only). The server only exposes it in StoreQueue mode (Jellyfin 10.10);
-	// Jellyfin 12.2 does not store it during playback (verified).
+	// only). The server only exposes it in StoreQueue mode (Jellyfin 10.10;
+	// 12.x keeps only the queue of the last stop report, see JELLYFIN.md).
 	Queue          []QueueEntry
 	PlaylistItemID string
+
+	// StaleTrackReports emulates Finamp while it is remote-controlled: it
+	// plays the items of a remote PlayNow but keeps reporting the previous
+	// track (paused at 0:00 while the new one loads), so the server never
+	// learns about the new track.
+	StaleTrackReports bool
+	// Playing is the item the client really plays (differs from ItemID with
+	// StaleTrackReports).
+	Playing string
 
 	Received []string
 }
@@ -101,13 +110,26 @@ type Server struct {
 	// StoreQueue emulates Jellyfin 10.10, which exposes NowPlayingQueue
 	// during playback. Off (default) emulates 12.2.
 	StoreQueue bool
-	items      map[string]*Item
-	itemOrder  []string
+	// maxRequestLine emulates Kestrel's MaxRequestLineSize (8 KiB, HTTP 414
+	// when exceeded; verified on 12.4.0) or a stricter reverse proxy.
+	maxRequestLine int
+	tooLongStatus  int
+	items          map[string]*Item
+	itemOrder      []string
 }
 
 // SetStoreQueue switches between Jellyfin 10.10 (true: the queue is exposed
 // during playback) and 12.2 (false) behaviour.
 func (s *Server) SetStoreQueue(v bool) { s.mu.Lock(); s.StoreQueue = v; s.mu.Unlock() }
+
+// SetMaxRequestLine sets the longest accepted request line ("POST /path?query
+// HTTP/1.1") and the status for longer ones (Kestrel: 8192 and 414; a proxy
+// may be stricter or answer 400).
+func (s *Server) SetMaxRequestLine(n, status int) {
+	s.mu.Lock()
+	s.maxRequestLine, s.tooLongStatus = n, status
+	s.mu.Unlock()
+}
 
 // SetNoWebSocket makes /socket behave like a proxy without WebSocket support.
 func (s *Server) SetNoWebSocket(v bool) { s.mu.Lock(); s.noWebSocket = v; s.mu.Unlock() }
@@ -118,6 +140,7 @@ func New(user, password string) *Server {
 		ServerID: "e6a658a0390740f3ab10638a00b6761f", Name: "fakefin", Version: "12.2.0",
 		users: map[string]string{user: password}, userIDs: map[string]string{user: "1a62e05105e2486ba0877d0f29a72e3e"},
 		tokens: map[string]string{}, clients: map[string]*Client{},
+		maxRequestLine: 8192, tooLongStatus: http.StatusRequestURITooLong,
 	}
 	s.Server = httptest.NewServer(http.HandlerFunc(s.handle))
 	return s
@@ -129,6 +152,7 @@ func NewTLS(user, password string) *Server {
 		ServerID: "e6a658a0390740f3ab10638a00b6761f", Name: "fakefin", Version: "12.2.0",
 		users: map[string]string{user: password}, userIDs: map[string]string{user: "1a62e05105e2486ba0877d0f29a72e3e"},
 		tokens: map[string]string{}, clients: map[string]*Client{},
+		maxRequestLine: 8192, tooLongStatus: http.StatusRequestURITooLong,
 	}
 	s.Server = httptest.NewTLSServer(http.HandlerFunc(s.handle))
 	return s
@@ -254,7 +278,12 @@ func (s *Server) handle(w http.ResponseWriter, r *http.Request) {
 	s.requests = append(s.requests, r.Method+" "+r.URL.RequestURI())
 	s.headers = append(s.headers, r.Header.Clone())
 	down := s.down
+	maxLine, tooLong := s.maxRequestLine, s.tooLongStatus
 	s.mu.Unlock()
+	if line := len(r.Method) + 1 + len(r.URL.RequestURI()) + len(" HTTP/1.1"); maxLine > 0 && line > maxLine {
+		w.WriteHeader(tooLong)
+		return
+	}
 	if down {
 		hj, ok := w.(http.Hijacker)
 		if ok {
