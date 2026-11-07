@@ -179,6 +179,8 @@ func apiError(path string, status int, notFound model.ErrorCode) error {
 		return model.Errorf(notFound, "not found (HTTP 404 on %s)", path).WithData("http_status", status)
 	case http.StatusBadRequest:
 		return model.Errorf(model.ErrProviderError, "Jellyfin rejected the request (HTTP 400 on %s)", path).WithData("http_status", status)
+	case http.StatusRequestURITooLong:
+		return model.Errorf(model.ErrProviderError, "the request URL was too long for the Jellyfin server or a proxy in front of it (HTTP 414 on %s)", path).WithData("http_status", status)
 	default:
 		return model.Errorf(model.ErrProviderError, "Jellyfin returned HTTP %d on %s", status, path).WithData("http_status", status)
 	}
@@ -461,14 +463,54 @@ func (c *Client) Lyrics(ctx context.Context, itemID string) (LyricsDto, bool, er
 	return out, err == nil, err
 }
 
-// PlayCommand asks a session to play items: playCommand is PlayNow,
-// PlayNext or PlayLast. The server expands albums/playlists into tracks.
-func (c *Client) PlayCommand(ctx context.Context, sessionID, playCommand string, itemIDs []string, startIndex *int) error {
+// maxPlayRequestTarget bounds the request target (path and query) of a play
+// command. Jellyfin passes the item ids only in the query string. Kestrel
+// rejects request lines over 8 KiB with HTTP 414 (verified on 12.4.0: 230
+// ids pass, 240 fail), reverse proxies have similar or smaller limits, and
+// clients fetch the same ids again (Finamp: GET /Items?ids=…), so stay well
+// below that.
+const maxPlayRequestTarget = 6000
+
+func playPath(sessionID string) string { return "/Sessions/" + url.PathEscape(sessionID) + "/Playing" }
+
+func playQuery(playCommand string, itemIDs []string, startIndex *int) url.Values {
 	q := url.Values{"playCommand": {playCommand}, "itemIds": {strings.Join(itemIDs, ",")}}
 	if startIndex != nil {
 		q.Set("startIndex", strconv.Itoa(*startIndex))
 	}
-	return c.do(ctx, http.MethodPost, "/Sessions/"+url.PathEscape(sessionID)+"/Playing", q, nil, nil, model.ErrSessionNotFound)
+	return q
+}
+
+// PlayTargetLen is the length of the request target (base path, path and
+// query) PlayCommand would send.
+func (c *Client) PlayTargetLen(sessionID, playCommand string, itemIDs []string, startIndex *int) int {
+	return len(c.base.Path) + len(playPath(sessionID)) + 1 + len(playQuery(playCommand, itemIDs, startIndex).Encode())
+}
+
+// PlayIDBudget returns how many bytes of escaped, comma-separated item ids
+// fit into one play command for the session (with a start index up to
+// 99999), and the per-separator cost. ids cost len(url.QueryEscape(id)).
+func (c *Client) PlayIDBudget(sessionID, playCommand string) (budget, sep int) {
+	start := 99999
+	base := c.PlayTargetLen(sessionID, playCommand, nil, &start)
+	return maxPlayRequestTarget - base, len(url.QueryEscape(","))
+}
+
+// PlayCommand asks a session to play items: playCommand is PlayNow,
+// PlayNext or PlayLast. The server expands albums/playlists into tracks.
+func (c *Client) PlayCommand(ctx context.Context, sessionID, playCommand string, itemIDs []string, startIndex *int) error {
+	path := playPath(sessionID)
+	err := c.do(ctx, http.MethodPost, path, playQuery(playCommand, itemIDs, startIndex), nil, nil, model.ErrSessionNotFound)
+	if err != nil {
+		status, _ := model.AsError(err).Data["http_status"].(int)
+		n := c.PlayTargetLen(sessionID, playCommand, itemIDs, startIndex)
+		if status == http.StatusRequestURITooLong || (status == http.StatusBadRequest && n > 2048) {
+			return model.Errorf(model.ErrProviderError,
+				"playlist too large for one command: the request URL (%d bytes, %d items) was rejected by the Jellyfin server or a proxy in front of it (HTTP %d)",
+				n, len(itemIDs), status).WithData("http_status", status).WithData("items", len(itemIDs))
+		}
+	}
+	return err
 }
 
 // PlaystateCommand sends a playstate command (Pause, Unpause, PlayPause,

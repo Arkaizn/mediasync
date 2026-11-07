@@ -100,7 +100,12 @@ func (e *Engine) Command(ctx context.Context, sessionID string, cmd model.Comman
 		if errors.Is(err, context.DeadlineExceeded) && model.CodeOf(err) == model.ErrInternal {
 			err = model.Wrap(model.ErrTimeout, err, fmt.Sprintf("provider did not confirm %q within %s", cmd.Name, e.opts.CommandTimeout))
 		}
-		e.log.Info("command failed", "session", sessionID, "command", cmd.Name, "code", model.CodeOf(err))
+		attrs := []any{"session", sessionID, "command", cmd.Name, "code", model.CodeOf(err)}
+		if st, ok := model.AsError(err).Data["http_status"]; ok {
+			attrs = append(attrs, "http_status", st)
+		}
+		// Error messages never contain secrets (providers only name paths).
+		e.log.Info("command failed", append(attrs, "err", err.Error())...)
 		return model.CommandResult{}, err
 	}
 
@@ -130,9 +135,25 @@ func (e *Engine) Command(ctx context.Context, sessionID string, cmd model.Comman
 	} else {
 		res.Outcome = model.OutcomeAcknowledged
 		res.Detail = fmt.Sprintf("the provider accepted the command but the expected state change was not observed within %s", verify)
+		if startsTrack(cmd) && after != nil && sameTrack(&targetBefore, after) {
+			res.Detail = fmt.Sprintf("the provider accepted the command, but the player has not reported a new track within %s: "+
+				"the session still shows the previous one (some clients report a remotely started track late or not at all)", verify)
+		}
 	}
 	e.log.Debug("command done", "session", sessionID, "command", cmd.Name, "outcome", res.Outcome)
 	return res, nil
+}
+
+// startsTrack reports whether cmd is expected to start another track.
+func startsTrack(cmd model.Command) bool {
+	return cmd.Name == model.CmdQueueJump || cmd.Name == model.CmdNext || cmd.Name == model.CmdPrevious ||
+		(cmd.Name == model.CmdPlayItems && cmd.PlayMode() == model.PlayModeNow)
+}
+
+// sameTrack reports whether both sessions show the same track.
+func sameTrack(a, b *model.Session) bool {
+	eq := func(x, y *string) bool { return (x == nil) == (y == nil) && (x == nil || *x == *y) }
+	return eq(a.Track.TrackID, b.Track.TrackID) && eq(a.Track.Title, b.Track.Title)
 }
 
 // predicate decides whether the session (nil if removed) reflects the command.
@@ -226,17 +247,10 @@ func expectation(before model.Session, cmd model.Command, issued time.Time) pred
 				return true
 			}
 			// The queue was replaced (e.g. the first new item is the one
-			// already playing).
-			if s.QueueRevision != beforeRev {
-				return true
-			}
-			// The same track was started again.
-			if beforePos != nil && *beforePos > 3000 {
-				if p := s.Playback.CurrentPosition(now); p != nil && *p < 3000 {
-					return true
-				}
-			}
-			return false
+			// already playing). A position reset on the same track is not
+			// taken as proof: clients that report a remote-started track
+			// late (Finamp) report the previous track at 0:00 instead.
+			return s.QueueRevision != beforeRev
 		}
 	case model.CmdSetVolume:
 		want := *cmd.Volume

@@ -61,6 +61,8 @@ and method calls go through the actual daemon. Tests that need
 | Secret Service unavailable; explicit file fallback | `TestCredentialStoreUnavailable` |
 
 | Queue (10.10 vs 12.2 behaviour), queue layout, lyrics (synced/unsynced/none/unknown, cached), playlists, play_items (playlist order, unknown ids, audio gating), queue_jump | `provider/jellyfin` `TestQueueOnJellyfin1010AndUnavailableOn122`, `TestQueueLayoutWebStyle`, `TestLyricsFromJellyfin`, `TestPlaylistsAndPlayItems`, `TestPlayItemsGatedOnPlayableAudio`, `TestQueueJump` |
+| Play commands stay under the URL budget (249-track playlist, jumps in a 400-item queue), retries for stricter proxies (414 and 400), "too large" error mapping, window selection | `provider/jellyfin` `TestPlayItemsLargePlaylistStaysWithinURLBudget`, `TestQueueJumpOnLongQueueStaysWithinURLBudget`, `TestPlayCommandRetriesForStricterProxyAndMapsTooLong`, `TestPlayWindow` |
+| New track after `queue_jump` reaches `session.updated`/`sessions.get`; a client that keeps reporting the old track (Finamp) gives `acknowledged` and no invented track; too-long error and its info log | `daemon` `TestEndToEndTrackAfterRemotePlayNow` |
 | MPRIS lyrics from `xesam:asText` | `provider/mpris` `TestLyricsFromMetadata` |
 | LRC parsing, LRCLIB client | `lyrics` |
 | Linked local session borrows queue/lyrics and routes queue commands; `queue.changed` without `session.updated`; view-only read caps; lyrics source order and fallback | `engine` `TestLinkedLocalBorrowsQueueLyricsAndRoutesCommands`, `TestQueueChangedEvents`, `TestViewOnlyKeepsReadOnlyCapabilities`, `TestLyricsSourcesInOrder` |
@@ -81,7 +83,7 @@ Secret Service client is tested against a protocol-level fake.
 go test -tags integration -v -run TestRealMPRIS ./test/integration/
 
 # Real Jellyfin: start a disposable server (Docker) and export its env vars
-eval "$(scripts/jellyfin-test-server.sh start)"   # defaults to jellyfin/jellyfin:12.2
+eval "$(scripts/jellyfin-test-server.sh start)"   # defaults to jellyfin/jellyfin:12.4
 go test -tags integration -v -run TestRealJellyfin ./test/integration/
 scripts/jellyfin-test-server.sh stop
 
@@ -102,6 +104,10 @@ MEDIASYNC_IT_SESSION_BUS=1 go test -tags integration -v -run TestRealSessionBus 
   and plain lyrics from `.lrc`/`.txt` files, playlists, `play_items` in
   playlist order, and refusal of unknown ids. Run it against both versions:
   `JELLYFIN_IMAGE=jellyfin/jellyfin:10.10.7 scripts/jellyfin-test-server.sh start`.
+- `TestRealJellyfinPlayURLLimit` sends play commands straight to the
+  server: 249 ids (8792-byte request target) get Kestrel's HTTP 414,
+  mapped to "playlist too large for one command"; the 168 ids mediasync's
+  budget allows (5957 bytes) are accepted and reach the client.
 - `TestRealJellyfin` logs in through the daemon. It simulates a phone app
   that opens the real WebSocket control channel and applies commands, plus
   a view-only browser client. It checks classification, metadata,
@@ -114,15 +120,20 @@ test -v` shows `SKIP` lines.
 
 ## Results of the last full run
 
-Queue/lyrics/playlist release (Linux, Go 1.24.7, dbus-daemon 1.14,
-mpv 0.37 + mpv-mpris 0.7.1):
+Play-command URL limit and remote track reporting fixes (Linux, Go 1.24.7,
+dbus-daemon 1.14, mpv 0.37 + mpv-mpris 0.7.1):
 
-- `go test -race ./...`: all packages pass.
+- `go test -race ./...`: all packages pass; `golangci-lint`: 0 issues.
 - `go test -tags integration ./test/integration/` against **Jellyfin
-  12.2.0** and **Jellyfin 10.10.7** (both provisioned by
+  12.4.0**, **12.2.0** and **10.10.7** (all provisioned by
   `scripts/jellyfin-test-server.sh`): `TestRealMPRISPlayerMPV`,
-  `TestRealJellyfin` and `TestRealJellyfinQueueLyricsPlaylists` PASS on
-  both; `TestRealSessionBusDiscovery` SKIP (no desktop session).
+  `TestRealJellyfin`, `TestRealJellyfinQueueLyricsPlaylists` and
+  `TestRealJellyfinPlayURLLimit` PASS on all three;
+  `TestRealSessionBusDiscovery` SKIP (no desktop session).
+- Finamp's handling of remote `Play` commands and its reporting while
+  remote-controlled were read from its source (1.0.1, `playon_service.dart`,
+  `playback_history_service.dart`) and reproduced with the fake server's
+  `StaleTrackReports` client; a real iPhone was not part of the run.
 - Not run: LRCLIB (host blocked in the environment), Feishin itself, real
   phone apps (simulated client using the same protocol, including the
   WebSocket `Play` message).

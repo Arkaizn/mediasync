@@ -348,7 +348,7 @@ Params: `{"session_id": "…"}` →
 ```
 Without queue data: `{"session_id": "…", "available": false, "current_index": null, "items": [], "source": null}`.
 Unknown item details stay `null`. See [Media features](#media-features-queue-lyrics-playlists)
-for where queues come from (and why Jellyfin 12.2 has none during playback).
+for where queues come from (and why on Jellyfin 12.x it is only a snapshot from the client's last track change).
 
 ### `lyrics.get`
 Params: `{"session_id": "…"}` (lyrics of the session's **current** track) →
@@ -376,10 +376,10 @@ Play one with `player.command` `play_items` (`item_ids: [id]`).
 
 ## Media features (queue, lyrics, playlists)
 
-| Feature | Jellyfin 12.2 | Jellyfin 10.10 | Local MPRIS player |
+| Feature | Jellyfin 12.x | Jellyfin 10.10 | Local MPRIS player |
 |---------|---------------|----------------|--------------------|
-| `queue` | **not available**: 12.x no longer exposes a client's `NowPlayingQueue` during playback (only after it stops), verified on 12.2.0 | ✅ from `NowPlayingQueue` (clients must report it, e.g. Finamp's *Report queue to server*) | from its linked Jellyfin session only (MPRIS players do not expose queues here) |
-| `queue_jump` | not available (needs `queue`) | ✅ by re-sending the queue with `PlayNow` + start index: Jellyfin has no "jump" command, so clients such as Finamp rebuild their queue from it | via linked session |
+| `queue` | only the queue the client sent with its last stop report (12.x stores it only then, verified on 12.2.0 and 12.4.0): empty until the client's first track change, then a snapshot from the last one | ✅ from `NowPlayingQueue` (clients must report it, e.g. Finamp's *Report queue to server*) | from its linked Jellyfin session only (MPRIS players do not expose queues here) |
+| `queue_jump` | with that snapshot (needs `queue`) | ✅ by re-sending the queue with `PlayNow` + start index: Jellyfin has no "jump" command, so clients such as Finamp rebuild their queue from it | via linked session |
 | `play_items` | ✅ clients with remote control that list `Audio` in `PlayableMediaTypes` | ✅ | via linked session |
 | `lyrics` | ✅ `/Audio/{id}/Lyrics` when the item `HasLyrics` | ✅ | ✅ from `xesam:asText` (Feishin publishes LRC there); or the Jellyfin item when the MPRIS track id contains one (Feishin does); or the linked session |
 
@@ -389,12 +389,20 @@ Play one with `player.command` `play_items` (`item_ids: [id]`).
 - **`play_items` details:** playlists are expanded by mediasync in playlist
   order (Jellyfin 12.2 would reorder them); albums and artists are expanded
   by the server; unknown ids fail with `invalid_argument` before anything is
-  sent (the server would silently send an empty list). At most 300 tracks
-  per command.
+  sent (the server would silently send an empty list). Jellyfin takes the
+  ids only in the request URL, which servers and proxies limit to about
+  8 KB, so one command carries about 170 tracks: a longer list is cut
+  (the beginning for `play_items`, the target and what follows it for
+  `queue_jump`), not split, and the rest is not queued. If a proxy rejects
+  even that, the command fails with `provider_error` "playlist too large
+  for one command" and `http_status` in the error data.
 - **Verification:** `queue_jump` is verified when the target track plays;
-  `play_items` `now` when the track or the queue changes; `next`/`last`
-  only through a queue change, so they stay `acknowledged` where the server
-  exposes no queue (12.2). Jellyfin 10.10 ignores *empty* queue reports and
+  `play_items` `now` when the track or the queue changes (a position reset
+  on the same track does not count: some clients report a remotely
+  started track late, e.g. Finamp, see docs/JELLYFIN.md, and then show the
+  previous track at 0:00; the result is `acknowledged` with a detail); `next`/`last`
+  only through a queue change, so they usually stay `acknowledged` on 12.x
+  (the queue only changes with the client's next stop report). Jellyfin 10.10 ignores *empty* queue reports and
   can therefore keep showing an outdated queue after a client's queue
   runs empty.
 

@@ -5,7 +5,7 @@
 #   scripts/jellyfin-test-server.sh stop
 #
 # Environment:
-#   JELLYFIN_IMAGE  (default jellyfin/jellyfin:12.2)
+#   JELLYFIN_IMAGE  (default jellyfin/jellyfin:12.4)
 #   JELLYFIN_PORT   (default 8096)
 #   JELLYFIN_NAME   (container name, default mediasync-jellyfin-it)
 #
@@ -15,7 +15,7 @@
 # Track 1]. Nothing here is meant for real use.
 set -euo pipefail
 
-IMAGE="${JELLYFIN_IMAGE:-jellyfin/jellyfin:12.2}"
+IMAGE="${JELLYFIN_IMAGE:-jellyfin/jellyfin:12.4}"
 PORT="${JELLYFIN_PORT:-8096}"
 NAME="${JELLYFIN_NAME:-mediasync-jellyfin-it}"
 URL="http://127.0.0.1:${PORT}"
