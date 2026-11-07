@@ -43,7 +43,7 @@ Playback (default target: the selected session):
   seek POSITION [--session ID] POSITION: 90, 1:30, 90s, +10s, -5s
   volume LEVEL [--session ID]  LEVEL: 0-100 (percent) or 0.0-1.0
   jump INDEX [--session ID]    play queue item INDEX (see "queue")
-  play-items ID... [--mode now|next|last] [--session ID]
+  play-items ID... [--mode now|next|last] [--shuffle] [--session ID]
                                play tracks, albums or playlists by id
 
 Media:
@@ -268,24 +268,17 @@ func runCommand(g globals, cmd string, args []string) error {
 		fs := flag.NewFlagSet(cmd, flag.ExitOnError)
 		session := fs.String("session", "", "target session id")
 		mode := fs.String("mode", "now", "now, next or last")
-		var ids []string
-		var rest []string
-		for i := 0; i < len(args); i++ {
-			if strings.HasPrefix(args[i], "--") {
-				rest = append(rest, args[i])
-				if !strings.Contains(args[i], "=") && i+1 < len(args) {
-					rest = append(rest, args[i+1])
-					i++
-				}
-				continue
-			}
-			ids = append(ids, args[i])
-		}
+		shuffle := fs.Bool("shuffle", false, "play the items in random order")
+		ids, rest := splitPlayItemsArgs(args)
 		_ = fs.Parse(rest)
 		if len(ids) == 0 {
-			return errors.New("usage: play-items ID... [--mode now|next|last] [--session ID]")
+			return errors.New("usage: play-items ID... [--mode now|next|last] [--shuffle] [--session ID]")
 		}
-		return sendCommand(g, map[string]any{"session_id": *session, "command": model.CmdPlayItems, "item_ids": ids, "mode": *mode})
+		params := map[string]any{"session_id": *session, "command": model.CmdPlayItems, "item_ids": ids, "mode": *mode}
+		if *shuffle {
+			params["shuffle"] = true
+		}
+		return sendCommand(g, params)
 	case "queue":
 		id, err := sessionOrSelected(g, args)
 		if err != nil {
@@ -926,4 +919,22 @@ func sessionOrSelected(g globals, args []string) (string, error) {
 		return "", errors.New("no session selected; pass --session ID")
 	}
 	return sel.Session.ID, nil
+}
+
+// splitPlayItemsArgs separates item ids from flags for play-items, where
+// ids and flags may be mixed. Flags take a value ("--mode next" or
+// "--mode=next"), except the boolean --shuffle.
+func splitPlayItemsArgs(args []string) (ids, flags []string) {
+	for i := 0; i < len(args); i++ {
+		if strings.HasPrefix(args[i], "--") {
+			flags = append(flags, args[i])
+			if !strings.Contains(args[i], "=") && args[i] != "--shuffle" && i+1 < len(args) {
+				flags = append(flags, args[i+1])
+				i++
+			}
+			continue
+		}
+		ids = append(ids, args[i])
+	}
+	return ids, flags
 }

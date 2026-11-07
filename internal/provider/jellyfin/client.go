@@ -433,6 +433,24 @@ func (c *Client) Playlists(ctx context.Context, userID string) ([]BaseItem, erro
 	return res.Items, err
 }
 
+// ContainerTracks returns the audio tracks the server would play for an
+// album, folder, collection, artist or genre, in album order, at most limit.
+func (c *Client) ContainerTracks(ctx context.Context, userID string, it BaseItem, limit int) ([]BaseItem, error) {
+	q := url.Values{"userId": {userID}, "recursive": {"true"}, "includeItemTypes": {"Audio"},
+		"sortBy": {"AlbumArtist,Album,ParentIndexNumber,IndexNumber,SortName"}, "limit": {strconv.Itoa(limit)}}
+	switch it.Type {
+	case "MusicArtist":
+		q.Set("artistIds", it.ID)
+	case "MusicGenre":
+		q.Set("genreIds", it.ID)
+	default:
+		q.Set("parentId", it.ID)
+	}
+	var res itemsResult
+	err := c.do(ctx, http.MethodGet, "/Items", q, nil, &res, model.ErrProviderError)
+	return res.Items, err
+}
+
 // PlaylistItems returns a playlist's entries in playlist order.
 func (c *Client) PlaylistItems(ctx context.Context, userID, playlistID string) ([]BaseItem, error) {
 	q := url.Values{"userId": {userID}}

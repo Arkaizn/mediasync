@@ -70,6 +70,9 @@ const (
 	CapQueueJump Capability = "queue_jump"
 	// CapPlayItems: the play_items command can be sent.
 	CapPlayItems Capability = "play_items"
+	// CapPlayItemsShuffle: play_items accepts "shuffle": true (the items are
+	// played in random order).
+	CapPlayItemsShuffle Capability = "play_items_shuffle"
 	// CapLyrics: lyrics.get has a lyrics source for the current track (it
 	// may still report that the track has no lyrics).
 	CapLyrics Capability = "lyrics"
@@ -77,14 +80,14 @@ const (
 
 // AllCapabilities lists every capability in a stable order.
 var AllCapabilities = []Capability{CapPlay, CapPause, CapPlayPause, CapStop, CapNext, CapPrevious, CapSeek, CapVolume,
-	CapQueue, CapQueueJump, CapPlayItems, CapLyrics}
+	CapQueue, CapQueueJump, CapPlayItems, CapPlayItemsShuffle, CapLyrics}
 
 // ReadOnlyCapabilities do not control playback; view-only sessions may have them.
 var ReadOnlyCapabilities = []Capability{CapQueue, CapLyrics}
 
 // ControlCapabilities are all capabilities that control playback.
 var ControlCapabilities = []Capability{CapPlay, CapPause, CapPlayPause, CapStop, CapNext, CapPrevious, CapSeek, CapVolume,
-	CapQueueJump, CapPlayItems}
+	CapQueueJump, CapPlayItems, CapPlayItemsShuffle}
 
 // Player describes the application or device that is playing.
 type Player struct {

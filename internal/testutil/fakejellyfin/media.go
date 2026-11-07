@@ -95,6 +95,28 @@ func (s *Server) itemsHandler(w http.ResponseWriter, r *http.Request) {
 				out = append(out, s.itemJSON(it))
 			}
 		}
+	case q.Get("parentId") != "" || q.Get("artistIds") != "" || q.Get("genreIds") != "":
+		// Tracks of an album, folder, artist or genre: the container's
+		// Children, recursively, in order.
+		id := q.Get("parentId") + q.Get("artistIds") + q.Get("genreIds")
+		var walk func(id string, depth int)
+		walk = func(id string, depth int) {
+			it := s.items[id]
+			if it == nil || depth > 4 {
+				return
+			}
+			for _, c := range it.Children {
+				if ch := s.items[c]; ch != nil && ch.Type == "Audio" {
+					out = append(out, s.itemJSON(ch))
+				} else {
+					walk(c, depth+1)
+				}
+			}
+		}
+		walk(id, 0)
+		if n, err := strconv.Atoi(q.Get("limit")); err == nil && n < len(out) {
+			out = out[:n]
+		}
 	case q.Get("includeItemTypes") != "":
 		types := strings.Split(q.Get("includeItemTypes"), ",")
 		var names []*Item

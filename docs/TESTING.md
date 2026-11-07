@@ -63,6 +63,7 @@ and method calls go through the actual daemon. Tests that need
 | Queue (10.10 vs 12.2 behaviour), queue layout, lyrics (synced/unsynced/none/unknown, cached), playlists, play_items (playlist order, unknown ids, audio gating), queue_jump | `provider/jellyfin` `TestQueueOnJellyfin1010AndUnavailableOn122`, `TestQueueLayoutWebStyle`, `TestLyricsFromJellyfin`, `TestPlaylistsAndPlayItems`, `TestPlayItemsGatedOnPlayableAudio`, `TestQueueJump` |
 | Play commands stay under the URL budget (249-track playlist, jumps in a 400-item queue), retries for stricter proxies (414 and 400), "too large" error mapping, window selection | `provider/jellyfin` `TestPlayItemsLargePlaylistStaysWithinURLBudget`, `TestQueueJumpOnLongQueueStaysWithinURLBudget`, `TestPlayCommandRetriesForStricterProxyAndMapsTooLong`, `TestPlayWindow` |
 | New track after `queue_jump` reaches `session.updated`/`sessions.get`; a client that keeps reporting the old track (Finamp) gives `acknowledged` and no invented track; too-long error and its info log | `daemon` `TestEndToEndTrackAfterRemotePlayNow` |
+| Shuffled `play_items`: permutation of the input (playlist plus expanded album, all modes), URL budget with a random cut, no start with the playing track, capability gating; `shuffle` only on `play_items`; linked sessions borrow `play_items_shuffle`; end to end over the socket | `provider/jellyfin` `TestPlayItemsShuffleIsAPermutation`, `TestPlayItemsShuffleRespectsURLBudget`, `TestShuffledPlayNowDoesNotStartWithTheCurrentTrack`, `TestShuffledPlayItemsNeedsTheCapability`; `model` `TestShuffleOnlyForPlayItems`, `TestPlayItemsRequiredCapability`; `engine` `TestPlayItemsShuffleCapabilityAndLinkedRouting`; `daemon` `TestEndToEndPlayItemsShuffle`; `mediasyncctl` `TestSplitPlayItemsArgs` |
 | MPRIS lyrics from `xesam:asText` | `provider/mpris` `TestLyricsFromMetadata` |
 | LRC parsing, LRCLIB client | `lyrics` |
 | Linked local session borrows queue/lyrics and routes queue commands; `queue.changed` without `session.updated`; view-only read caps; lyrics source order and fallback | `engine` `TestLinkedLocalBorrowsQueueLyricsAndRoutesCommands`, `TestQueueChangedEvents`, `TestViewOnlyKeepsReadOnlyCapabilities`, `TestLyricsSourcesInOrder` |
@@ -108,6 +109,9 @@ MEDIASYNC_IT_SESSION_BUS=1 go test -tags integration -v -run TestRealSessionBus 
   server: 249 ids (8792-byte request target) get Kestrel's HTTP 414,
   mapped to "playlist too large for one command"; the 168 ids mediasync's
   budget allows (5957 bytes) are accepted and reach the client.
+- `TestRealJellyfinPlayItemsShuffle` plays the test album and its artist
+  with `"shuffle": true`: mediasync expands both itself, and the client
+  receives a permutation of the three tracks (`verified`).
 - `TestRealJellyfin` logs in through the daemon. It simulates a phone app
   that opens the real WebSocket control channel and applies commands, plus
   a view-only browser client. It checks classification, metadata,

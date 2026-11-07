@@ -127,7 +127,7 @@ position as `position_ms + (now - position_at) * (rate ?? 1)` while
 | `provider` / `provider_instance` | `mpris`, `jellyfin` / `mpris`, `jellyfin:<server name>`. |
 | `origin` | `local` (this user session) or `remote` (another device, via a server). |
 | `controllable` | `false` = view-only. |
-| `capabilities` | Subset of `play`, `pause`, `play_pause`, `stop`, `next`, `previous`, `seek`, `volume`, `queue`, `queue_jump`, `play_items`, `lyrics`. Only advertised when supported. `queue` and `lyrics` are read-only and also appear on view-only sessions; all others need a controllable session. See [Media features](#media-features-queue-lyrics-playlists). |
+| `capabilities` | Subset of `play`, `pause`, `play_pause`, `stop`, `next`, `previous`, `seek`, `volume`, `queue`, `queue_jump`, `play_items`, `play_items_shuffle`, `lyrics`. Only advertised when supported. `queue` and `lyrics` are read-only and also appear on view-only sessions; all others need a controllable session. See [Media features](#media-features-queue-lyrics-playlists). |
 | `playback.state` | `playing`, `paused`, `stopped`, `unknown`. |
 | `playback.volume` | 0.0–1.0 (MPRIS players may report >1.0). |
 | `playback.repeat` | `none`, `track`, `playlist`, or `null`. |
@@ -206,7 +206,8 @@ Params:
  "volume": 0.5,                  // set_volume: 0.0–1.5
  "index": 5,                     // queue_jump: index into sessions.queue items
  "item_ids": ["…"],              // play_items: 1–200 track, album or playlist ids
- "mode": "now" | "next" | "last"}  // play_items: default "now"
+ "mode": "now" | "next" | "last", // play_items: default "now"
+ "shuffle": true}                 // play_items: random order (needs play_items_shuffle)
 ```
 
 The command goes **only** to the provider that owns `session_id`. If that
@@ -381,6 +382,7 @@ Play one with `player.command` `play_items` (`item_ids: [id]`).
 | `queue` | only the queue the client sent with its last stop report (12.x stores it only then, verified on 12.2.0 and 12.4.0): empty until the client's first track change, then a snapshot from the last one | ✅ from `NowPlayingQueue` (clients must report it, e.g. Finamp's *Report queue to server*) | from its linked Jellyfin session only (MPRIS players do not expose queues here) |
 | `queue_jump` | with that snapshot (needs `queue`) | ✅ by re-sending the queue with `PlayNow` + start index: Jellyfin has no "jump" command, so clients such as Finamp rebuild their queue from it | via linked session |
 | `play_items` | ✅ clients with remote control that list `Audio` in `PlayableMediaTypes` | ✅ | via linked session |
+| `play_items_shuffle` | ✅ wherever `play_items` is (mediasync shuffles) | ✅ | via linked session |
 | `lyrics` | ✅ `/Audio/{id}/Lyrics` when the item `HasLyrics` | ✅ | ✅ from `xesam:asText` (Feishin publishes LRC there); or the Jellyfin item when the MPRIS track id contains one (Feishin does); or the linked session |
 
 - **Optional fallback:** with `[lyrics] lrclib = true`, tracks without lyrics
@@ -396,6 +398,19 @@ Play one with `player.command` `play_items` (`item_ids: [id]`).
   `queue_jump`), not split, and the rest is not queued. If a proxy rejects
   even that, the command fails with `provider_error` "playlist too large
   for one command" and `http_status` in the error data.
+- **`shuffle`:** with `"shuffle": true`, mediasync builds the whole track
+  list itself (playlists in playlist order, and albums, artists, genres and
+  folders, which the server would otherwise expand), shuffles it, and sends
+  it with the requested mode. The result is a permutation of the tracks:
+  nothing is lost or repeated. Long lists are shuffled before they are cut
+  to the URL limit, so the part that is sent is a random selection. A
+  shuffled `now` never starts with the track that is already playing (if
+  there is another). Clients decide how they insert the tracks: Finamp
+  sorts `next`/`last` items by track number again, so only `now` keeps the
+  shuffled order there. `shuffle` is only accepted on `play_items`
+  (`invalid_argument` elsewhere), needs the `play_items_shuffle`
+  capability (`unsupported_capability` otherwise), and is verified like
+  `play_items`. It does not switch the player's own shuffle mode.
 - **Verification:** `queue_jump` is verified when the target track plays;
   `play_items` `now` when the track or the queue changes (a position reset
   on the same track does not count: some clients report a remotely

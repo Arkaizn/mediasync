@@ -649,7 +649,9 @@ func (p *Provider) mapSession(si SessionInfo, server *PublicSystemInfo, now time
 		// that cannot play audio (verified on 12.2), so gate on the client's
 		// declared playable media types.
 		if slices.ContainsFunc(si.PlayableMediaTypes, func(t string) bool { return strings.EqualFold(t, "Audio") }) {
-			caps = append(caps, model.CapPlayItems)
+			// mediasync expands and shuffles the list itself, so the
+			// shuffled variant works wherever play_items does.
+			caps = append(caps, model.CapPlayItems, model.CapPlayItemsShuffle)
 			if len(si.NowPlayingQueue) > 0 {
 				caps = append(caps, model.CapQueueJump)
 			}
@@ -792,7 +794,7 @@ func (p *Provider) Command(ctx context.Context, sessionID string, cmd model.Comm
 		v = min(max(v, 0), 100)
 		err = p.client.GeneralCommand(ctx, jfID, "SetVolume", map[string]string{"Volume": strconv.Itoa(v)})
 	case model.CmdPlayItems:
-		err = p.playItems(ctx, jfID, cmd)
+		err = p.playItems(ctx, si, cmd)
 	case model.CmdQueueJump:
 		err = p.queueJump(ctx, sessionID, jfID, *cmd.Index)
 	default:

@@ -17,7 +17,8 @@ const (
 	CmdSetVolume CommandName = "set_volume"
 	// CmdQueueJump plays the queue item at Index (see sessions.queue).
 	CmdQueueJump CommandName = "queue_jump"
-	// CmdPlayItems plays tracks, albums or playlists (ItemIDs) now, next or last (Mode).
+	// CmdPlayItems plays tracks, albums or playlists (ItemIDs) now, next or
+	// last (Mode), in random order with Shuffle.
 	CmdPlayItems CommandName = "play_items"
 )
 
@@ -40,7 +41,12 @@ type Command struct {
 	Index      *int        `json:"index,omitempty"`
 	ItemIDs    []string    `json:"item_ids,omitempty"`
 	Mode       string      `json:"mode,omitempty"`
+	// Shuffle (play_items only) plays the items in random order.
+	Shuffle *bool `json:"shuffle,omitempty"`
 }
+
+// Shuffled reports whether a play_items command asks for random order.
+func (c Command) Shuffled() bool { return c.Shuffle != nil && *c.Shuffle }
 
 // RequiredCapability returns the capability a command needs.
 func (c Command) RequiredCapability() (Capability, bool) {
@@ -64,6 +70,9 @@ func (c Command) RequiredCapability() (Capability, bool) {
 	case CmdQueueJump:
 		return CapQueueJump, true
 	case CmdPlayItems:
+		if c.Shuffled() {
+			return CapPlayItemsShuffle, true
+		}
 		return CapPlayItems, true
 	}
 	return "", false
@@ -93,7 +102,7 @@ func (c Command) Validate() error {
 		if c.Index == nil || *c.Index < 0 {
 			return Errorf(ErrInvalidArgument, "queue_jump requires index >= 0")
 		}
-		if c.PositionMS != nil || c.OffsetMS != nil || c.Volume != nil || c.ItemIDs != nil || c.Mode != "" {
+		if c.PositionMS != nil || c.OffsetMS != nil || c.Volume != nil || c.ItemIDs != nil || c.Mode != "" || c.Shuffle != nil {
 			return Errorf(ErrInvalidArgument, "queue_jump only takes index")
 		}
 		return nil
@@ -112,7 +121,7 @@ func (c Command) Validate() error {
 			return Errorf(ErrInvalidArgument, "mode must be now, next or last")
 		}
 		if c.PositionMS != nil || c.OffsetMS != nil || c.Volume != nil || c.Index != nil {
-			return Errorf(ErrInvalidArgument, "play_items only takes item_ids and mode")
+			return Errorf(ErrInvalidArgument, "play_items only takes item_ids, mode and shuffle")
 		}
 		return nil
 	default:
@@ -120,8 +129,8 @@ func (c Command) Validate() error {
 			return Errorf(ErrInvalidArgument, "command %q takes no arguments", c.Name)
 		}
 	}
-	if c.Index != nil || c.ItemIDs != nil || c.Mode != "" {
-		return Errorf(ErrInvalidArgument, "command %q does not take index, item_ids or mode", c.Name)
+	if c.Index != nil || c.ItemIDs != nil || c.Mode != "" || c.Shuffle != nil {
+		return Errorf(ErrInvalidArgument, "command %q does not take index, item_ids, mode or shuffle", c.Name)
 	}
 	return nil
 }

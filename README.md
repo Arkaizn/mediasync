@@ -124,7 +124,7 @@ mediasyncctl watch                           # live view (add --json for NDJSON)
 mediasyncctl diag                            # diagnostics
 mediasyncctl jellyfin check                  # why is my phone view-only?
 mediasyncctl queue | lyrics | playlists      # queue, lyrics, playlists
-mediasyncctl play-items PLAYLIST_ID --session ID
+mediasyncctl play-items PLAYLIST_ID --session ID [--shuffle]
 ```
 
 ## Using the API
