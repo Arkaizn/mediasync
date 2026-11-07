@@ -8,6 +8,12 @@ name: AUR release
 on:
   push:
     tags: ['v[0-9]*']
+  # Re-publish an existing tag (Actions -> AUR release -> Run workflow).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish, e.g. v0.2.0'
+        required: true
 
 permissions:
   contents: read
@@ -28,11 +34,14 @@ jobs:
 
       - name: Set version and checksum
         id: pkg
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          ver="${GITHUB_REF_NAME#v}"
-          case "$ver" in *[!0-9A-Za-z._]*|"") echo "::error::tag $GITHUB_REF_NAME is not a valid pkgver"; exit 1;; esac
-          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
+          case "$TAG" in v[0-9]*) ;; *) echo "::error::$TAG is not a release tag (vX.Y.Z)"; exit 1;; esac
+          ver="${TAG#v}"
+          case "$ver" in *[!0-9A-Za-z._]*|"") echo "::error::tag $TAG is not a valid pkgver"; exit 1;; esac
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
           sum="$(curl -fsSL --retry 5 --retry-all-errors "$url" | sha256sum | cut -d' ' -f1)"
           cd packaging/aur/mediasync
           sed -i "s/^pkgver=.*/pkgver=${ver}/; s/^pkgrel=.*/pkgrel=1/; s/^sha256sums=.*/sha256sums=('${sum}')/" PKGBUILD
@@ -66,7 +75,9 @@ jobs:
           if [ "$fp" != "SHA256:RFzBCUItH9LZS0cKB5UE6ceAYhBD5C8GeOBip8Z11+4" ]; then
             echo "::error::unexpected AUR host key $fp"; exit 1
           fi
-          export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          # ssh looks up ~ in /etc/passwd, not $HOME (which differs in the
+          # job container), so name both files explicitly.
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o UserKnownHostsFile=$HOME/.ssh/known_hosts -o StrictHostKeyChecking=yes"
           git clone ssh://aur@aur.archlinux.org/mediasync.git aur
           cp packaging/aur/mediasync/PKGBUILD packaging/aur/mediasync/.SRCINFO aur/
           cd aur
