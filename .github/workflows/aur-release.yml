@@ -30,7 +30,7 @@ jobs:
       - name: Install tools
         run: pacman -Syu --noconfirm --needed git openssh
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Set version and checksum
         id: pkg
