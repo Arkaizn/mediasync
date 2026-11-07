@@ -303,6 +303,9 @@ func runCommand(g globals, cmd string, args []string) error {
 			printJSON(q)
 			return nil
 		}
+		if q.Context != nil {
+			fmt.Println(contextLine(q.Context))
+		}
 		if !q.Available {
 			fmt.Println("no queue available for", id)
 			return nil
@@ -959,4 +962,17 @@ func parseOnOff(s string) (bool, error) {
 		return false, nil
 	}
 	return false, fmt.Errorf("want on or off, got %q", s)
+}
+
+// contextLine describes where a queue came from.
+func contextLine(c *model.QueueContext) string {
+	line := "Playing from: " + c.Name
+	if c.Name == "" {
+		line = "Playing from: " + c.ID
+	}
+	line += " (" + c.Type
+	if c.Shuffled {
+		line += ", shuffled"
+	}
+	return line + ")"
 }

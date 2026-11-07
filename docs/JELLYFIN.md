@@ -109,6 +109,25 @@ Clients:
   retries with half the items, up to three times, then fails with
   `provider_error` "playlist too large for one command" and the HTTP
   status in the error data.
+- **Where a queue came from is only known when mediasync started it.**
+  Jellyfin's session data has no field for a queue's source, and Finamp
+  reports only the upcoming tracks (`peekQueue`) with section names as
+  `PlaylistItemId`; its own `PlaylistItemId` for the session is the id of
+  the queue's first item, not of the playlist. So mediasync records a
+  context (playlist or album, the expanded track order, shuffled or not)
+  only for its own `play_items` `now` of a single playlist or album, keeps
+  it while the client plays from that list and its reported upcoming tracks
+  follow the list's order, and drops it otherwise. Until the client reports
+  a track from the list (Finamp: after its 90-second controlled mode, see
+  below), the position in the context is unknown.
+- **`queue_jump` without losing the client's queue:** a short forward jump
+  is sent as `NextTrack` commands instead of `PlayNow` (which makes Finamp
+  rebuild its queue from the sent tracks, losing the earlier tracks, its
+  history and source). Finamp handles `NextTrack` itself (`skipToNext`), so
+  its queue, shuffle state and source stay. On a context queue, `PlayNow`
+  with the whole list keeps the list. Limits: the steps are counted in the
+  reported queue (on 12.x a snapshot from the client's last track change),
+  and a client that skips on its own between reports moves the count.
 - **Finamp reports a remotely started track late (Finamp 1.0.1, from its
   source).** Any remote command (`Playstate` or `Play`) puts Finamp into a
   "controlled" mode for 90 seconds (`playOnStaleDelay`). In that mode its

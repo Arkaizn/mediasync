@@ -108,10 +108,9 @@ func (e *Engine) emitLocked(ev Event) {
 // sessionsEqual compares sessions as consumers see them (QueueRevision is
 // internal and reported through queue.changed instead).
 func sessionsEqual(a, b *model.Session) bool {
-	if a.QueueRevision != b.QueueRevision {
-		x, y := *a, *b
-		x.QueueRevision, y.QueueRevision = "", ""
-		return reflect.DeepEqual(&x, &y)
-	}
-	return reflect.DeepEqual(a, b)
+	// The queue revisions are internal; queue changes are separate events.
+	x, y := *a, *b
+	x.QueueRevision, y.QueueRevision = "", ""
+	x.ReportedQueueRevision, y.ReportedQueueRevision = "", ""
+	return reflect.DeepEqual(&x, &y)
 }

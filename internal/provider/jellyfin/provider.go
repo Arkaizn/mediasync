@@ -64,6 +64,10 @@ type Config struct {
 	RemoveDisconnectedAfter time.Duration
 	// MaxBackoff bounds the retry interval while the server is unreachable.
 	MaxBackoff time.Duration
+	// JumpMaxSteps: a forward queue_jump of up to this many tracks is sent
+	// as NextTrack commands (0: always PlayNow); JumpStepDelay separates them.
+	JumpMaxSteps  int
+	JumpStepDelay time.Duration
 
 	// AllUsers includes sessions of other users (admin accounts only).
 	AllUsers      bool
@@ -121,6 +125,11 @@ type Provider struct {
 	serverSkew time.Duration
 	lastPoll   time.Time
 	pollCount  uint64
+	// contexts: queues mediasync started from a playlist or album, by our
+	// session ID. jumps: where our NextTrack jumps left a session, while it
+	// has not reported anything new.
+	contexts map[string]*queueContext
+	jumps    map[string]*stepJump
 
 	media mediaCache
 }
@@ -156,6 +165,8 @@ func New(cfg Config, log *slog.Logger) (*Provider, error) {
 		reauth:    make(chan struct{}, 1),
 		live:      map[string]SessionInfo{},
 		published: map[string]model.Session{},
+		contexts:  map[string]*queueContext{},
+		jumps:     map[string]*stepJump{},
 		state:     model.ProviderStarting,
 	}, nil
 }
@@ -436,6 +447,11 @@ func (p *Provider) poll(ctx context.Context) error {
 		if !p.include(si, user) {
 			continue
 		}
+		id := p.SessionID(sessionServerID(si, server), si.DeviceID, si.Client)
+		p.updateContextLocked(id, si)
+		if j := p.jumps[id]; j != nil && (!strings.EqualFold(nowPlayingID(si), j.baseTrack) || queueOnlyRevision(si) != j.baseQueue) {
+			delete(p.jumps, id) // the session reported something new
+		}
 		s := p.mapSession(si, server, now)
 		seen[s.ID] = true
 		p.live[s.ID] = si
@@ -448,6 +464,8 @@ func (p *Provider) poll(ctx context.Context) error {
 			removals = append(removals, id)
 			delete(p.published, id)
 			delete(p.live, id)
+			delete(p.contexts, id)
+			delete(p.jumps, id)
 		}
 	}
 	p.state, p.message, p.lastErr = model.ProviderRunning, "", nil
@@ -511,11 +529,15 @@ func (p *Provider) SessionID(serverID, deviceID, client string) string {
 	return "jellyfin:" + p.cfg.Name + ":" + hex.EncodeToString(h[:8])
 }
 
-func (p *Provider) mapSession(si SessionInfo, server *PublicSystemInfo, now time.Time) model.Session {
-	serverID := si.ServerID
-	if serverID == "" && server != nil {
-		serverID = server.ID
+func sessionServerID(si SessionInfo, server *PublicSystemInfo) string {
+	if si.ServerID == "" && server != nil {
+		return server.ID
 	}
+	return si.ServerID
+}
+
+func (p *Provider) mapSession(si SessionInfo, server *PublicSystemInfo, now time.Time) model.Session {
+	serverID := sessionServerID(si, server)
 	item := si.NowPlayingItem
 	s := model.Session{
 		ID:                p.SessionID(serverID, si.DeviceID, si.Client),
@@ -657,7 +679,7 @@ func (p *Provider) mapSession(si SessionInfo, server *PublicSystemInfo, now time
 			// mediasync expands and shuffles the list itself, so the
 			// shuffled variant works wherever play_items does.
 			caps = append(caps, model.CapPlayItems, model.CapPlayItemsShuffle)
-			if len(si.NowPlayingQueue) > 0 {
+			if len(si.NowPlayingQueue) > 0 || p.contexts[s.ID] != nil {
 				caps = append(caps, model.CapQueueJump)
 			}
 		}
@@ -666,10 +688,15 @@ func (p *Provider) mapSession(si SessionInfo, server *PublicSystemInfo, now time
 		s.Capabilities = []model.Capability{}
 	}
 	// Read-only capabilities also apply to view-only sessions.
-	if len(si.NowPlayingQueue) > 0 && s.Status != model.StatusStale {
+	// A queue mediasync started (context) is a queue even where the server
+	// exposes none (12.x before the client's next stop report).
+	if c := p.contexts[s.ID]; (len(si.NowPlayingQueue) > 0 || c != nil) && s.Status != model.StatusStale {
 		s.Capabilities = append(s.Capabilities, model.CapQueue)
-		s.QueueRevision = queueRevision(si)
+		s.QueueRevision = queueRevision(si) + contextRevision(c)
 	}
+	// Always set, so that a queue mediasync starts (a context) is never
+	// mistaken for the client reporting a new queue.
+	s.ReportedQueueRevision = "reported:" + queueRevision(si)
 	if item.HasLyrics != nil && *item.HasLyrics {
 		s.Capabilities = append(s.Capabilities, model.CapLyrics)
 	}
@@ -703,6 +730,8 @@ func (p *Provider) markDisconnected(err error) {
 			removals = append(removals, id)
 			delete(p.published, id)
 			delete(p.live, id)
+			delete(p.contexts, id)
+			delete(p.jumps, id)
 			continue
 		}
 		if s.Status != model.StatusDisconnected {
@@ -805,7 +834,7 @@ func (p *Provider) Command(ctx context.Context, sessionID string, cmd model.Comm
 		}
 		err = p.client.GeneralCommand(ctx, jfID, "SetShuffleQueue", map[string]string{"ShuffleMode": mode})
 	case model.CmdPlayItems:
-		err = p.playItems(ctx, si, cmd)
+		err = p.playItems(ctx, sessionID, si, cmd)
 	case model.CmdQueueJump:
 		err = p.queueJump(ctx, sessionID, jfID, *cmd.Index)
 	default:

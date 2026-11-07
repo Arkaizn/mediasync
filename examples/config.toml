@@ -53,6 +53,8 @@ request_timeout = "10s"
 stale_after = "90s"                 # playing client without control channel, no report → stale
 stale_paused_after = "15m"          # same, for paused clients
 remove_disconnected_after = "5m"    # drop sessions after the server is unreachable this long
+queue_jump_max_steps = 15           # forward queue_jump by up to N NextTrack commands (0: always PlayNow)
+queue_jump_step_delay = "250ms"     # pause between those commands
 
 # One block per server. Log in with: mediasyncctl jellyfin login home
 [[jellyfin.servers]]

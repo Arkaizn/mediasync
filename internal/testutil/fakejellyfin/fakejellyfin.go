@@ -75,8 +75,9 @@ type Client struct {
 	// Shuffled is the client's shuffle mode (PlayState.PlaybackOrder).
 	Shuffled bool
 	// Playing is the item the client really plays (differs from ItemID with
-	// StaleTrackReports).
-	Playing string
+	// StaleTrackReports); realQueue is its real upcoming list then.
+	Playing   string
+	realQueue []string
 
 	Received []string
 }
@@ -472,6 +473,21 @@ func (s *Server) deliver(c *Client, cmd string, q map[string][]string) {
 		c.Paused = !c.Paused
 	case cmd == "Stop":
 		c.Stopped = true
+	case cmd == "NextTrack" && c.StaleTrackReports && (c.realQueue != nil || len(c.Queue) > 0):
+		// Plays the next track but keeps reporting the old one (Finamp).
+		if c.realQueue == nil {
+			for _, e := range c.Queue {
+				c.realQueue = append(c.realQueue, e.ID)
+			}
+		}
+		if len(c.realQueue) > 0 {
+			c.Playing, c.realQueue = c.realQueue[0], c.realQueue[1:]
+			c.PositionTicks = 0
+		}
+	case cmd == "NextTrack" && len(c.Queue) > 0:
+		// Reported-queue clients (Finamp style: upcoming tracks only).
+		s.setCurrent(c, c.Queue[0].ID)
+		c.Queue = c.Queue[1:]
 	case cmd == "NextTrack" && c.queueIdx+1 < len(c.queue):
 		c.queueIdx++
 		c.Title = c.queue[c.queueIdx]

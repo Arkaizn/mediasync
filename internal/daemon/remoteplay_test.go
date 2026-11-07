@@ -19,6 +19,7 @@ import (
 func TestEndToEndTrackAfterRemotePlayNow(t *testing.T) {
 	h := newHarness(t, true, func(c *config.Config) {
 		c.Commands.RemoteVerifyTimeout = config.Duration(1500 * time.Millisecond)
+		c.Jellyfin.QueueJumpMaxSteps = 0 // this test is about the PlayNow path
 	})
 	h.jf.SetStoreQueue(true)
 	ids := []string{"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa3"}
@@ -74,14 +75,22 @@ func TestEndToEndTrackAfterRemotePlayNow(t *testing.T) {
 
 	// A client that keeps reporting the old track: acknowledged, with a
 	// detail that says so; the old track stays (nothing invented).
-	for _, cmd := range []map[string]any{
+	for _, tc := range []struct {
+		cmd    map[string]any
+		detail string
+	}{
 		// play_items first: the client then still reports 1:00, so its
-		// stale report (old track, 0:00) must not count as "restarted".
-		{"session_id": ss.ID, "command": "play_items", "item_ids": []string{"plist000000000000000000000000001"}, "mode": "now"},
-		{"session_id": ss.ID, "command": "queue_jump", "index": 2},
+		// stale report (old track, 0:00) is a restart under the old id,
+		// which is not proof of the new track.
+		{map[string]any{"session_id": ss.ID, "command": "play_items", "item_ids": []string{"plist000000000000000000000000001"}, "mode": "now"},
+			"position restarted, but it still reports the previous track"},
+		// The queue is now the playlist (context): track 3, track 2. The
+		// position is already at 0:00, so only "no new track" is known.
+		{map[string]any{"session_id": ss.ID, "command": "queue_jump", "index": 1}, "has not reported a new track"},
 	} {
+		cmd := tc.cmd
 		res := call[model.CommandResult](t, c, "player.command", cmd)
-		if res.Outcome != model.OutcomeAcknowledged || !strings.Contains(res.Detail, "has not reported a new track") {
+		if res.Outcome != model.OutcomeAcknowledged || !strings.Contains(res.Detail, tc.detail) {
 			t.Errorf("%s on a stale-reporting client: outcome %s, detail %q", cmd["command"], res.Outcome, res.Detail)
 		}
 		if res.Session == nil || *res.Session.Track.TrackID != ids[0] {
@@ -89,7 +98,7 @@ func TestEndToEndTrackAfterRemotePlayNow(t *testing.T) {
 		}
 	}
 	st := h.jf.ClientState(stale.SessionID)
-	if st.Playing != ids[2] || st.ItemID != ids[0] { // plays track 3, still reports track 1
+	if st.Playing != ids[1] || st.ItemID != ids[0] { // plays track 2, still reports track 1
 		t.Errorf("fake stale client: playing %s, reporting %s", st.Playing, st.ItemID)
 	}
 	if got := call[struct{ Session model.Session }](t, c, "sessions.get", map[string]any{"session_id": ss.ID}).Session; *got.Track.TrackID != ids[0] {

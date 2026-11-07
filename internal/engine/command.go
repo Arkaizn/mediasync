@@ -138,16 +138,38 @@ func (e *Engine) Command(ctx context.Context, sessionID string, cmd model.Comman
 		if startsTrack(cmd) && after != nil && sameTrack(&targetBefore, after) {
 			res.Detail = fmt.Sprintf("the provider accepted the command, but the player has not reported a new track within %s: "+
 				"the session still shows the previous one (some clients report a remotely started track late or not at all)", verify)
+			if restarted(&targetBefore, after, start, e.opts.Now()) {
+				// The player reacted, but under the old track id: proof that
+				// something played anew, not which track.
+				res.Detail = fmt.Sprintf("the provider accepted the command and the player's position restarted, but it still reports "+
+					"the previous track after %s, so the new track cannot be confirmed (Finamp reports remotely started tracks under the "+
+					"previous id for up to 90 s)", verify)
+			}
 		}
 	}
 	e.log.Debug("command done", "session", sessionID, "command", cmd.Name, "outcome", res.Outcome)
 	return res, nil
 }
 
+// reportedQueueRev is the queue revision from the player's own reports.
+func reportedQueueRev(s *model.Session) string {
+	if s.ReportedQueueRevision != "" {
+		return s.ReportedQueueRevision
+	}
+	return s.QueueRevision
+}
+
 // startsTrack reports whether cmd is expected to start another track.
 func startsTrack(cmd model.Command) bool {
 	return cmd.Name == model.CmdQueueJump || cmd.Name == model.CmdNext || cmd.Name == model.CmdPrevious ||
 		(cmd.Name == model.CmdPlayItems && cmd.PlayMode() == model.PlayModeNow)
+}
+
+// restarted reports whether the position went from beyond 3 s (when the
+// command was issued) back to under 3 s.
+func restarted(before, after *model.Session, issued, now time.Time) bool {
+	b, a := before.Playback.CurrentPosition(issued), after.Playback.CurrentPosition(now)
+	return b != nil && a != nil && *b > 3000 && *a < 3000
 }
 
 // sameTrack reports whether both sessions show the same track.
@@ -233,12 +255,12 @@ func expectation(before model.Session, cmd model.Command, issued time.Time) pred
 	case model.CmdPlayItems:
 		if cmd.PlayMode() != model.PlayModeNow {
 			// Adding to the queue is only observable through the queue.
-			beforeRev := before.QueueRevision
+			beforeRev := reportedQueueRev(&before)
 			return func(s *model.Session, _ time.Time) bool {
-				return s != nil && s.QueueRevision != beforeRev
+				return s != nil && reportedQueueRev(s) != beforeRev
 			}
 		}
-		beforeRev := before.QueueRevision
+		beforeRev := reportedQueueRev(&before)
 		return func(s *model.Session, now time.Time) bool {
 			if s == nil {
 				return false
@@ -250,7 +272,7 @@ func expectation(before model.Session, cmd model.Command, issued time.Time) pred
 			// already playing). A position reset on the same track is not
 			// taken as proof: clients that report a remote-started track
 			// late (Finamp) report the previous track at 0:00 instead.
-			return s.QueueRevision != beforeRev
+			return reportedQueueRev(s) != beforeRev
 		}
 	case model.CmdSetShuffle:
 		want := *cmd.Shuffle

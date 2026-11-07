@@ -19,6 +19,26 @@ type Queue struct {
 	CurrentIndex *int        `json:"current_index"`
 	Items        []QueueItem `json:"items"`
 	Source       *string     `json:"source"`
+	// Context is the playlist or album the queue was started from, when
+	// mediasync started it (nil otherwise; never guessed).
+	Context *QueueContext `json:"context"`
+}
+
+// Queue context types.
+const (
+	ContextPlaylist = "playlist"
+	ContextAlbum    = "album"
+)
+
+// QueueSourceContext is Queue.Source when Items is the whole context.
+const QueueSourceContext = "context"
+
+// QueueContext describes where a queue came from.
+type QueueContext struct {
+	Type     string `json:"type"` // "playlist" or "album"
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	Shuffled bool   `json:"shuffled"`
 }
 
 // UnavailableQueue returns the queue result for sessions without queue data.

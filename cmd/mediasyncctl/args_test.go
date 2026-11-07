@@ -3,6 +3,8 @@ package main
 import (
 	"slices"
 	"testing"
+
+	"github.com/arkaizn/mediasync/internal/model"
 )
 
 func TestSplitPlayItemsArgs(t *testing.T) {
@@ -33,5 +35,14 @@ func TestParseOnOff(t *testing.T) {
 		if _, err := parseOnOff(in); err == nil {
 			t.Errorf("%q accepted", in)
 		}
+	}
+}
+
+func TestContextLine(t *testing.T) {
+	if got := contextLine(&model.QueueContext{Type: "playlist", ID: "x", Name: "Road Trip"}); got != "Playing from: Road Trip (playlist)" {
+		t.Error(got)
+	}
+	if got := contextLine(&model.QueueContext{Type: "album", ID: "a1", Shuffled: true}); got != "Playing from: a1 (album, shuffled)" {
+		t.Error(got)
 	}
 }
