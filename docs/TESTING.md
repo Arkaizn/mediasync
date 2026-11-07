@@ -57,6 +57,7 @@ and method calls go through the actual daemon. Tests that need
 | Socket permissions; second instance refused | `TestSocketSecurity` |
 | Service restart; client re-snapshots; stale socket | `TestServiceRestartClientResnapshots` |
 | Reload keeps running on invalid config | `TestReloadKeepsRunningOnInvalidConfig` |
+| Self-restart after the executable is replaced (not for missing/non-executable files) | `cmd/mediasyncd` `TestWatchReplacedDetectsNewExecutable`, `TestWatchReplacedIgnoresMissingAndNonExecutable` |
 | Secret Service unavailable; explicit file fallback | `TestCredentialStoreUnavailable` |
 
 | Queue (10.10 vs 12.2 behaviour), queue layout, lyrics (synced/unsynced/none/unknown, cached), playlists, play_items (playlist order, unknown ids, audio gating), queue_jump | `provider/jellyfin` `TestQueueOnJellyfin1010AndUnavailableOn122`, `TestQueueLayoutWebStyle`, `TestLyricsFromJellyfin`, `TestPlaylistsAndPlayItems`, `TestPlayItemsGatedOnPlayableAudio`, `TestQueueJump` |
