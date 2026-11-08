@@ -173,9 +173,10 @@ func (p *Provider) Queue(ctx context.Context, sessionID string) (model.Queue, er
 	pub := p.published[sessionID]
 	var qc *model.QueueContext
 	var ctxIDs []string
-	ctxCurrent := -1
+	ctxCurrent, ctxInOrder := -1, false
 	if c := p.contexts[sessionID]; c != nil {
 		qc = model.Ptr(c.QueueContext)
+		ctxInOrder = !c.membership
 		ctxIDs = slices.Clone(c.itemIDs)
 		ctxCurrent = c.current // the reported track's position, if it is in the context
 	}
@@ -192,7 +193,7 @@ func (p *Provider) Queue(ctx context.Context, sessionID string) (model.Queue, er
 	if si.NowPlayingItem != nil {
 		known = append(known, *si.NowPlayingItem)
 	}
-	if qc != nil && !qc.Shuffled {
+	if qc != nil && ctxInOrder {
 		// The whole playlist or album in its order, earlier tracks
 		// included; the current position only once the client reported it.
 		q.Available, q.Source, q.Items = true, model.Ptr(model.QueueSourceContext), p.queueItems(ctx, ctxIDs, known)
@@ -545,7 +546,7 @@ func (p *Provider) queueJump(ctx context.Context, sessionID, jfSessionID string,
 	jump := p.jumps[sessionID]
 	p.mu.Unlock()
 
-	if c != nil && !c.Shuffled {
+	if c != nil && !c.membership {
 		if err := p.sendPlay(ctx, jfSessionID, "PlayNow", ids, index, true); err != nil {
 			return err
 		}
@@ -580,9 +581,11 @@ func (p *Provider) queueJump(ctx context.Context, sessionID, jfSessionID string,
 	err = p.sendPlay(ctx, jfSessionID, "PlayNow", ids, index, true)
 	p.mu.Lock()
 	delete(p.jumps, sessionID)
-	if err == nil && c != nil {
-		// A shuffled context: the client's queue is now the reported list.
-		delete(p.contexts, sessionID)
+	if c := p.contexts[sessionID]; err == nil && c != nil {
+		// A shuffled context: the client's queue is now (part of) the
+		// reported list, all of it from the context. Keep it, waiting for
+		// the client to report again.
+		p.startContextLocked(sessionID, p.live[sessionID], c.QueueContext, c.itemIDs)
 	}
 	p.mu.Unlock()
 	return err

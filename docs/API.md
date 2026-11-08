@@ -369,10 +369,16 @@ known, `items` is the **whole playlist or album in its order** (earlier
 tracks included), `source` is `"context"`, and `current_index` is the position
 of the track the client reports, or `null` while that track is not part of
 the list (some clients report a remotely started track late, see
-docs/JELLYFIN.md). With a shuffled context, `items` stays what the client
-reports. The context ends when the client plays something outside it,
+docs/JELLYFIN.md). With a shuffled context, **or while the client's own
+shuffle is on** (`playback.shuffle`), `items` is what the client reports
+(`"source": "jellyfin"`, `current_index` into that list), with `context`
+still set, and the context is checked by membership: it stays while the
+reported track and all reported upcoming tracks belong to it (in any order,
+repeats allowed for repeat mode). Otherwise the upcoming tracks must follow
+the context order. The context ends when the client plays something outside it,
 reports (after it switched to the context) upcoming tracks that do not
-follow its order, never reports a context track within 10 minutes, gets
+follow its order (or, checked by membership, an upcoming track outside it),
+never reports a context track within 10 minutes, gets
 another `play_items`, or disappears. Starting and ending it emit `queue.changed`.
 Contexts survive a service restart (they are kept in the state file) and are
 checked again against the session's first report afterwards.

@@ -8,6 +8,19 @@ are versioned separately (see docs/API.md).
 ## [Unreleased]
 
 ### Fixed
+- Queue contexts ended when the client's own shuffle reordered the queue
+  (Finamp 1.0.2 with shuffle on, Jellyfin 12.4.0: "upcoming tracks do not
+  follow the context order" after the first NextTrack). A context that was
+  shuffled by mediasync, or while the client reports shuffle on, is now
+  checked by membership (all reported tracks belong to it, any order,
+  repeats allowed) and ends only when a track outside it is reported. In
+  that mode `sessions.queue` shows the client's reported list with the
+  context kept; a `queue_jump` there keeps the context too. Switching the
+  client's shuffle on mid-context switches to this check instead of ending
+  the context; the strict order check stays for unshuffled contexts with
+  the client's shuffle off.
+
+### Fixed
 - A Jellyfin session missing from a single poll was removed at once:
   subscribers saw `session.removed`, `selection.changed` to auto and
   `session.added` with the same id within 1–2 s (Finamp during some

@@ -163,6 +163,17 @@ Clients:
   does not invent the track: such commands end as `acknowledged`, with a
   detail saying the player has not reported a new track. The fix belongs
   in Finamp.
+- **Finamp's own shuffle reorders what it receives.** With its shuffle mode
+  on (`PlayState.PlaybackOrder` `Shuffle`, observed with Finamp 1.0.2 on
+  12.4.0), a `PlayNow` list is played and reported in Finamp's own random
+  order, so the reported upcoming tracks never follow the sent order. A
+  queue context is therefore checked by membership while the context was
+  shuffled by mediasync or the client reports shuffle on (re-evaluated with
+  every report, so switching shuffle on mid-playlist keeps the context): it
+  stays while the current and all upcoming tracks belong to it (repeats
+  allowed: with repeat on, Finamp reports tracks again) and ends when a
+  track outside it shows up. `sessions.queue` then shows the client's
+  reported list with the context, and `queue_jump` works in that list.
 - **Finamp's session drops out of `GET /Sessions` for about one poll**
   during some `queue_jump` / `NextTrack` sequences (Finamp on iPhone, 12.4.0)
   and comes back with the same device and client, i.e. the same mediasync
