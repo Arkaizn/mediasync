@@ -131,6 +131,13 @@ Clients:
   context ends only on a real departure (a track outside it, a later
   snapshot out of order, or no context track within the time box). Each
   ending is logged at info level ("queue context ended", with the reason).
+  Contexts are kept in the state file (`provider_state` → `queue_contexts`:
+  type, id, name, shuffled, track ids, position, and for a waiting context
+  the old track and start time), because mediasyncd restarts itself after
+  every package update. After a restart each one is pending again: a
+  context that was waiting keeps waiting for the same old track; one that
+  was confirmed is confirmed by the session's next context track and ends
+  on any other; one whose session is gone ends after the first poll.
 - **`queue_jump` without losing the client's queue:** a short forward jump
   is sent as `NextTrack` commands instead of `PlayNow` (which makes Finamp
   rebuild its queue from the sent tracks, losing the earlier tracks, its

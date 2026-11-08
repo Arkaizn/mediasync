@@ -3,6 +3,7 @@ package jellyfin
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -232,5 +233,94 @@ func TestStepJumpWithChangedSnapshotUsesPlayNow(t *testing.T) {
 	got := received(e, ph)
 	if len(got) != 3 || !strings.HasPrefix(got[2], "Play(PlayNow:") || !strings.HasSuffix(got[2], "@3)") {
 		t.Errorf("want two NextTrack, then PlayNow: %v", got)
+	}
+}
+
+func TestQueueContextsSaveAndRestore(t *testing.T) {
+	var saved []string
+	var mu sync.Mutex
+	mk := func(state []byte) *Provider {
+		p, err := New(Config{Name: "home", URL: "http://127.0.0.1:1", DeviceID: "d", Credentials: secrets.NewMemory(),
+			SavedState: state, SaveState: func(b json.RawMessage) { mu.Lock(); saved = append(saved, string(b)); mu.Unlock() }}, quiet())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	p := mk(nil)
+	old := SessionInfo{NowPlayingItem: &BaseItem{ID: "old"}}
+	p.mu.Lock()
+	p.startContextLocked("waiting", old, model.QueueContext{Type: "playlist", ID: "pl1", Name: "Electronic"}, []string{"a", "b", "c"})
+	p.startContextLocked("playing", old, model.QueueContext{Type: "album", ID: "al1", Name: "Album X"}, []string{"x", "y"})
+	p.updateContextLocked("playing", SessionInfo{NowPlayingItem: &BaseItem{ID: "y"}})
+	p.startContextLocked("gone", old, model.QueueContext{Type: "playlist", ID: "pl2", Name: "Gone"}, []string{"g"})
+	p.mu.Unlock()
+	p.persistContexts()
+	p.persistContexts() // unchanged: not saved again
+	if len(saved) != 1 || !strings.Contains(saved[0], `"Electronic"`) || !strings.Contains(saved[0], `"base_track":"old"`) {
+		t.Fatalf("saved %v", saved)
+	}
+
+	// After a restart.
+	q := mk([]byte(saved[0]))
+	if len(q.contexts) != 3 {
+		t.Fatalf("restored %d contexts", len(q.contexts))
+	}
+	for id, c := range q.contexts {
+		if !c.pending {
+			t.Errorf("%s: a restored context must be re-validated (pending)", id)
+		}
+	}
+	if c := q.contexts["playing"]; c.current != 1 || c.baseTrack != "" {
+		t.Errorf("confirmed context restored as %+v", c)
+	}
+	// The waiting one keeps waiting while the old track is reported.
+	q.updateContextLocked("waiting", old)
+	if c := q.contexts["waiting"]; c == nil || !c.pending {
+		t.Error("restored waiting context ended on the old track")
+	}
+	// The confirmed one: confirmed again by a context track …
+	q.updateContextLocked("playing", SessionInfo{NowPlayingItem: &BaseItem{ID: "y"}})
+	if c := q.contexts["playing"]; c == nil || c.pending || c.current != 1 {
+		t.Errorf("restored context not confirmed: %+v", c)
+	}
+	// … and a restored confirmed context ends on any other track.
+	r := mk([]byte(saved[0]))
+	r.updateContextLocked("playing", SessionInfo{NowPlayingItem: &BaseItem{ID: "old"}})
+	if r.contexts["playing"] != nil {
+		t.Error("a restored confirmed context survived a track outside it")
+	}
+	// Garbage is ignored, not fatal.
+	if g := mk([]byte(`{not json`)); len(g.contexts) != 0 {
+		t.Error("garbage restored")
+	}
+}
+
+func TestRestoredContextOfAbsentSessionIsDropped(t *testing.T) {
+	e := stepEnv(t, 15)
+	library(e.srv)
+	queuePhone(e.srv)
+	id := e.prov.SessionID(e.srv.ServerID, "iphone-q", "Finamp")
+	state := fmt.Sprintf(`{"queue_contexts":{%q:{"type":"playlist","id":%q,"name":"Road Trip","item_ids":[%q,%q],"current":0},
+		"jellyfin:home:0000000000000000":{"type":"playlist","id":"x","name":"Gone","item_ids":["a"],"current":0}}}`, id, pl, t3, t1)
+	p, err := New(Config{Name: "home", URL: e.srv.URL, DeviceID: "mediasync-test-device", DeviceName: "mydesk", Version: "0.1.0",
+		PollInterval: 50 * time.Millisecond, RequestTimeout: time.Second, MaxBackoff: 200 * time.Millisecond,
+		Credentials: e.creds, JumpMaxSteps: 15, SavedState: json.RawMessage(state)}, quiet())
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.prov = p
+	e.login(t)
+	e.run(t)
+	// The phone plays t1 (the playlist's second track): confirmed at index 1.
+	s := e.sessionFor(t, "iphone-q", "Finamp", func(x model.Session) bool { return x.Has(model.CapQueue) })
+	q, _ := e.prov.Queue(context.Background(), s.ID)
+	if q.Context == nil || q.Context.Name != "Road Trip" || q.CurrentIndex == nil || *q.CurrentIndex != 1 {
+		t.Errorf("restored context %+v current %v", q.Context, q.CurrentIndex)
+	}
+	e.prov.mu.Lock()
+	defer e.prov.mu.Unlock()
+	if len(e.prov.contexts) != 1 {
+		t.Errorf("the context of the absent session was not dropped: %d contexts", len(e.prov.contexts))
 	}
 }

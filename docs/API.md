@@ -367,13 +367,15 @@ It is only known when **mediasync started the queue** with `play_items`
 came from, and mediasync never guesses one. While a non-shuffled context is
 known, `items` is the **whole playlist or album in its order** (earlier
 tracks included), `source` is `"context"`, and `current_index` is the position
-of the track the client reports, or `null` until it reports one from the
-list (some clients report a remotely started track late, see
+of the track the client reports, or `null` while that track is not part of
+the list (some clients report a remotely started track late, see
 docs/JELLYFIN.md). With a shuffled context, `items` stays what the client
 reports. The context ends when the client plays something outside it,
 reports (after it switched to the context) upcoming tracks that do not
 follow its order, never reports a context track within 10 minutes, gets
 another `play_items`, or disappears. Starting and ending it emit `queue.changed`.
+Contexts survive a service restart (they are kept in the state file) and are
+checked again against the session's first report afterwards.
 Unknown item details stay `null`. See [Media features](#media-features-queue-lyrics-playlists)
 for where queues come from (and why on Jellyfin 12.x it is only a snapshot from the client's last track change).
 

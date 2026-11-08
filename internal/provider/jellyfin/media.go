@@ -177,9 +177,7 @@ func (p *Provider) Queue(ctx context.Context, sessionID string) (model.Queue, er
 	if c := p.contexts[sessionID]; c != nil {
 		qc = model.Ptr(c.QueueContext)
 		ctxIDs = slices.Clone(c.itemIDs)
-		if !c.pending {
-			ctxCurrent = c.current
-		}
+		ctxCurrent = c.current // the reported track's position, if it is in the context
 	}
 	p.mu.Unlock()
 	if !ok {

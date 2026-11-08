@@ -7,6 +7,19 @@ are versioned separately (see docs/API.md).
 
 ## [Unreleased]
 
+### Added
+- Queue contexts survive a service restart (mediasyncd restarts itself
+  after every package update): they are kept in the state file
+  (`provider_state`) and re-validated with the session's first report
+  afterwards, like a pending context; contexts of sessions that are gone
+  are dropped after the first poll.
+
+### Changed
+- `sessions.queue` `current_index` on a context follows the reported track
+  whenever it is part of the context, also while the context still waits
+  for confirmation (e.g. right after a restart); `null` while the reported
+  track is outside it.
+
 ### Fixed
 - Queue contexts ended about 1.5 s after `play_items` with Finamp (Jellyfin
   12.4.0), so `sessions.queue` never showed one. Right after the `Play`
