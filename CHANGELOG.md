@@ -8,6 +8,32 @@ are versioned separately (see docs/API.md).
 ## [Unreleased]
 
 ### Added
+- Queue context: when mediasync starts a single playlist or album with
+  `play_items` `now`, `sessions.queue` reports
+  `"context": {"type", "id", "name", "shuffled"}` (new optional field,
+  `null` otherwise; never guessed for queues started on the client), and,
+  unless shuffled, the whole playlist in its order as `items`
+  (`"source": "context"`, `current_index` = the reported track's position).
+  The context ends when the client plays something else, reports a queue
+  that does not follow it, gets another `play_items`, or disappears;
+  starting and ending emit `queue.changed`. This also gives a queue (and
+  `queue_jump`) on Jellyfin 12.x, which exposes none during playback.
+  `mediasyncctl queue` prints "Playing from: NAME".
+- `queue_jump` keeps the client's queue: short forward jumps
+  (`jellyfin.queue_jump_max_steps`, default 15) are sent as that many
+  `NextTrack` commands (`queue_jump_step_delay`, default 250 ms apart),
+  counting from mediasync's previous jump while the client has not reported
+  anything new; on a context queue the whole list is sent with `PlayNow` and
+  the start index. Other jumps work as before.
+
+### Changed
+- An unconfirmed track change after a remote command whose position
+  restarted under the old track id gets a detail saying so (still
+  `acknowledged`).
+- Command verification ignores queue changes mediasync makes itself (a
+  context starting), using the player's own reported queue only.
+
+### Added
 - Shuffled playback: `player.command` `play_items` takes `"shuffle": true`
   (API version 1, additive) and needs the new capability
   `play_items_shuffle`, advertised wherever Jellyfin's `play_items` is and

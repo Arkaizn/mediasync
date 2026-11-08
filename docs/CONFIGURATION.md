@@ -75,6 +75,8 @@ A link only merges sessions when they also play the same track.
 | `stale_after` | `"90s"` | A *playing* client without a remote-control connection that has not reported for this long becomes `stale` (its position is then shown as unknown). Jellyfin keeps such sessions for several minutes and keeps advancing their position. |
 | `stale_paused_after` | `"15m"` | The same for paused clients, which often stop reporting |
 | `remove_disconnected_after` | `"5m"` | While the server is unreachable, sessions stay visible as `disconnected` for this long |
+| `queue_jump_max_steps` | `15` | A forward `queue_jump` of up to this many tracks is sent as `NextTrack` commands, keeping the client's own queue; further or backwards, the queue is sent again with `PlayNow`. `0`: always `PlayNow`. 0–50 |
+| `queue_jump_step_delay` | `"250ms"` | Pause between those `NextTrack` commands, so the client handles them in order. 0–2 s |
 
 ### `[[jellyfin.servers]]`
 | Key | Required | |

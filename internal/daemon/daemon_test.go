@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -784,8 +785,10 @@ func TestEndToEndQueueLyricsPlaylists(t *testing.T) {
 		t.Errorf("queue_jump %+v", res)
 	}
 	nextEvent(t, c, "queue.changed", func(e event) bool { return e.Type == "queue.changed" && e.SessionID == ph.ID })
+	// A short forward jump is sent as NextTrack commands (the client keeps
+	// its own queue).
 	got := h.jf.ClientState(phone.SessionID).Received
-	if got[len(got)-1] != "Play(PlayNow:"+strings.Join(ids, ",")+"@2)" {
+	if !slices.Equal(got[len(got)-2:], []string{"NextTrack", "NextTrack"}) {
 		t.Errorf("jump sent %v", got)
 	}
 	// play_items with a playlist: expanded in playlist order, verified.
@@ -835,7 +838,7 @@ func TestQueueUnavailableOnJellyfin122(t *testing.T) {
 	}
 	q := call[model.Queue](t, c, "sessions.queue", map[string]any{"session_id": s.Sessions[0].ID})
 	b, _ := json.Marshal(q)
-	if string(b) != `{"session_id":"`+s.Sessions[0].ID+`","available":false,"current_index":null,"items":[],"source":null}` {
+	if string(b) != `{"session_id":"`+s.Sessions[0].ID+`","available":false,"current_index":null,"items":[],"source":null,"context":null}` {
 		t.Errorf("unavailable queue JSON: %s", b)
 	}
 }

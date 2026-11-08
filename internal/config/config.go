@@ -101,12 +101,18 @@ type Dedup struct {
 }
 
 type Jellyfin struct {
-	PollInterval            Duration         `toml:"poll_interval"`
-	RequestTimeout          Duration         `toml:"request_timeout"`
-	StaleAfter              Duration         `toml:"stale_after"`
-	StalePausedAfter        Duration         `toml:"stale_paused_after"`
-	RemoveDisconnectedAfter Duration         `toml:"remove_disconnected_after"`
-	Servers                 []JellyfinServer `toml:"servers"`
+	PollInterval            Duration `toml:"poll_interval"`
+	RequestTimeout          Duration `toml:"request_timeout"`
+	StaleAfter              Duration `toml:"stale_after"`
+	StalePausedAfter        Duration `toml:"stale_paused_after"`
+	RemoveDisconnectedAfter Duration `toml:"remove_disconnected_after"`
+	// QueueJumpMaxSteps: forward queue_jump by up to this many NextTrack
+	// commands (keeps the client's queue); further, or backwards, the queue
+	// is sent again with PlayNow. 0 always uses PlayNow.
+	QueueJumpMaxSteps int `toml:"queue_jump_max_steps"`
+	// QueueJumpStepDelay is the pause between those NextTrack commands.
+	QueueJumpStepDelay Duration         `toml:"queue_jump_step_delay"`
+	Servers            []JellyfinServer `toml:"servers"`
 }
 
 type JellyfinServer struct {
@@ -162,6 +168,7 @@ func Default() Config {
 			PollInterval: Duration(2 * time.Second), RequestTimeout: Duration(10 * time.Second),
 			StaleAfter: Duration(90 * time.Second), StalePausedAfter: Duration(15 * time.Minute),
 			RemoveDisconnectedAfter: Duration(5 * time.Minute),
+			QueueJumpMaxSteps:       15, QueueJumpStepDelay: Duration(250 * time.Millisecond),
 		},
 		Credentials: Credentials{Store: "secret-service"},
 		IPC:         IPC{MaxClients: 32},
@@ -287,6 +294,7 @@ func (c Config) Validate() error {
 		{"jellyfin.stale_after", j.StaleAfter.D(), 10 * time.Second, 24 * time.Hour},
 		{"jellyfin.stale_paused_after", j.StalePausedAfter.D(), 10 * time.Second, 24 * time.Hour},
 		{"jellyfin.remove_disconnected_after", j.RemoveDisconnectedAfter.D(), 5 * time.Second, 24 * time.Hour},
+		{"jellyfin.queue_jump_step_delay", j.QueueJumpStepDelay.D(), 0, 2 * time.Second},
 		{"commands.timeout", c.Commands.Timeout.D(), 100 * time.Millisecond, time.Minute},
 		{"commands.verify_timeout", c.Commands.VerifyTimeout.D(), 0, time.Minute},
 		{"commands.remote_verify_timeout", c.Commands.RemoteVerifyTimeout.D(), 0, time.Minute},
@@ -294,6 +302,9 @@ func (c Config) Validate() error {
 		if err := within(chk.name, chk.v, chk.min, chk.max); err != nil {
 			return err
 		}
+	}
+	if j.QueueJumpMaxSteps < 0 || j.QueueJumpMaxSteps > 50 {
+		return model.Errorf(model.ErrInvalidConfig, "jellyfin.queue_jump_max_steps must be between 0 and 50")
 	}
 	names := map[string]bool{}
 	for i, s := range j.Servers {

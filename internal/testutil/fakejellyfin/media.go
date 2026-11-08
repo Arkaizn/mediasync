@@ -239,6 +239,7 @@ func (s *Server) play(w http.ResponseWriter, r *http.Request, c *Client, ok bool
 		if c.StaleTrackReports {
 			// Plays the new track, reports the old one (Finamp, see Client).
 			c.Playing, c.PositionTicks, c.Paused = ids[start], 0, true
+			c.realQueue = append([]string{}, ids[start+1:]...)
 			break
 		}
 		s.setCurrent(c, ids[start])

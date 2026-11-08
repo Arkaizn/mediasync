@@ -185,7 +185,8 @@ func (s *Service) buildJellyfin(cfg config.Config, deviceID string) (map[string]
 			PollInterval: cfg.Jellyfin.PollInterval.D(), RequestTimeout: cfg.Jellyfin.RequestTimeout.D(),
 			StaleAfter: cfg.Jellyfin.StaleAfter.D(), StalePausedAfter: cfg.Jellyfin.StalePausedAfter.D(),
 			RemoveDisconnectedAfter: cfg.Jellyfin.RemoveDisconnectedAfter.D(),
-			AllUsers:                srv.AllUsers, IgnoreClients: srv.IgnoreClients, IgnoreDevices: srv.IgnoreDevices,
+			JumpMaxSteps:            cfg.Jellyfin.QueueJumpMaxSteps, JumpStepDelay: cfg.Jellyfin.QueueJumpStepDelay.D(),
+			AllUsers: srv.AllUsers, IgnoreClients: srv.IgnoreClients, IgnoreDevices: srv.IgnoreDevices,
 			CAFile: srv.CAFile, HTTPClient: s.opts.HTTPClient, Credentials: s.creds,
 		}, s.log)
 		if err != nil {

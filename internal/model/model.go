@@ -205,6 +205,12 @@ type Session struct {
 	// QueueRevision changes whenever the session's queue changes. It is not
 	// exposed; the engine turns changes into "queue.changed" events.
 	QueueRevision string `json:"-"`
+	// ReportedQueueRevision is the part of QueueRevision that comes from the
+	// player's own reports, without what mediasync adds (e.g. a queue
+	// context it started). Command verification uses it, so that
+	// mediasync's own bookkeeping is never taken as the player's reaction.
+	// Empty: the same as QueueRevision.
+	ReportedQueueRevision string `json:"-"`
 	// Hidden is set when the session is excluded from default listings:
 	// "duplicate", "mode", "view_only" or "stale".
 	Hidden string `json:"hidden,omitempty"`

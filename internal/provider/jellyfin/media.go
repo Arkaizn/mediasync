@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"math/rand/v2"
 	"net/url"
 	"slices"
@@ -170,25 +171,55 @@ func (p *Provider) Queue(ctx context.Context, sessionID string) (model.Queue, er
 	p.mu.Lock()
 	si, ok := p.live[sessionID]
 	pub := p.published[sessionID]
+	var qc *model.QueueContext
+	var ctxIDs []string
+	ctxCurrent := -1
+	if c := p.contexts[sessionID]; c != nil {
+		qc = model.Ptr(c.QueueContext)
+		ctxIDs = slices.Clone(c.itemIDs)
+		if !c.pending {
+			ctxCurrent = c.current
+		}
+	}
 	p.mu.Unlock()
 	if !ok {
 		return model.Queue{}, model.Errorf(model.ErrSessionNotFound, "Jellyfin session %q is not present", sessionID)
 	}
 	q := model.UnavailableQueue(sessionID)
-	if len(si.NowPlayingQueue) == 0 || !pub.Has(model.CapQueue) {
+	q.Context = qc
+	if !pub.Has(model.CapQueue) {
 		return q, nil
 	}
-	ids, current := queueLayout(si)
 	known := slices.Clone(si.NowPlayingQueueFullItems)
 	if si.NowPlayingItem != nil {
 		known = append(known, *si.NowPlayingItem)
 	}
-	meta := p.itemMeta(ctx, ids, known)
+	if qc != nil && !qc.Shuffled {
+		// The whole playlist or album in its order, earlier tracks
+		// included; the current position only once the client reported it.
+		q.Available, q.Source, q.Items = true, model.Ptr(model.QueueSourceContext), p.queueItems(ctx, ctxIDs, known)
+		if ctxCurrent >= 0 {
+			q.CurrentIndex = model.Ptr(ctxCurrent)
+		}
+		return q, nil
+	}
+	if len(si.NowPlayingQueue) == 0 {
+		return q, nil
+	}
+	ids, current := queueLayout(si)
 	q.Available = true
 	q.Source = model.Ptr("jellyfin")
 	if current >= 0 {
 		q.CurrentIndex = model.Ptr(current)
 	}
+	q.Items = p.queueItems(ctx, ids, known)
+	return q, nil
+}
+
+// queueItems builds queue entries with item details (unknown details stay nil).
+func (p *Provider) queueItems(ctx context.Context, ids []string, known []BaseItem) []model.QueueItem {
+	meta := p.itemMeta(ctx, ids, known)
+	items := make([]model.QueueItem, 0, len(ids))
 	for i, id := range ids {
 		qi := model.QueueItem{Index: i, ItemID: id}
 		if it, ok := meta[id]; ok {
@@ -202,9 +233,9 @@ func (p *Provider) Queue(ctx context.Context, sessionID string) (model.Queue, er
 			}
 			qi.ArtworkURL = p.artworkFor(it)
 		}
-		q.Items = append(q.Items, qi)
+		items = append(items, qi)
 	}
-	return q, nil
+	return items
 }
 
 // Lyrics implements provider.LyricsSource for the session's current track.
@@ -317,15 +348,16 @@ var containerTypes = map[string]bool{"MusicAlbum": true, "MusicArtist": true, "M
 // with containers (shuffling needs the whole track list). Unknown ids are an
 // error (the server would accept them silently and send an empty list to the
 // client).
-func (p *Provider) expandItems(ctx context.Context, ids []string, containers bool) ([]string, error) {
+func (p *Provider) expandItems(ctx context.Context, ids []string, expand func(BaseItem) bool) ([]string, []BaseItem, error) {
 	uid, err := p.ensureUserID(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	items, err := p.client.Items(ctx, uid, ids)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
+	var requested []BaseItem
 	byID := map[string]BaseItem{}
 	for _, it := range items {
 		byID[strings.ToLower(it.ID)] = it
@@ -337,22 +369,23 @@ func (p *Provider) expandItems(ctx context.Context, ids []string, containers boo
 			it, ok = byID[strings.ToLower(id)]
 		}
 		if !ok {
-			return nil, model.Errorf(model.ErrInvalidArgument, "unknown item id %q", id)
+			return nil, nil, model.Errorf(model.ErrInvalidArgument, "unknown item id %q", id)
 		}
+		requested = append(requested, it)
 		if strings.EqualFold(it.Type, "Playlist") {
 			entries, err := p.client.PlaylistItems(ctx, uid, it.ID)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			for _, e := range entries {
 				out = append(out, e.ID)
 			}
 			continue
 		}
-		if containers && containerTypes[it.Type] {
+		if containerTypes[it.Type] && expand(it) {
 			tracks, err := p.client.ContainerTracks(ctx, uid, it, maxExpandTracks+1)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			for _, tr := range tracks {
 				out = append(out, tr.ID)
@@ -362,12 +395,12 @@ func (p *Provider) expandItems(ctx context.Context, ids []string, containers boo
 		out = append(out, it.ID)
 	}
 	if len(out) == 0 {
-		return nil, model.Errorf(model.ErrInvalidArgument, "the requested items contain nothing to play")
+		return nil, nil, model.Errorf(model.ErrInvalidArgument, "the requested items contain nothing to play")
 	}
 	if len(out) > maxExpandTracks {
-		return nil, model.Errorf(model.ErrInvalidArgument, "too many tracks (%d); at most %d", len(out), maxExpandTracks)
+		return nil, nil, model.Errorf(model.ErrInvalidArgument, "too many tracks (%d); at most %d", len(out), maxExpandTracks)
 	}
-	return out, nil
+	return out, requested, nil
 }
 
 // playWindow returns the part ids[lo:hi] that contains index and fits into
@@ -440,9 +473,15 @@ func shuffleIDs(ids []string) {
 	rand.Shuffle(len(ids), func(i, j int) { ids[i], ids[j] = ids[j], ids[i] })
 }
 
-func (p *Provider) playItems(ctx context.Context, si SessionInfo, cmd model.Command) error {
+func (p *Provider) playItems(ctx context.Context, sessionID string, si SessionInfo, cmd model.Command) error {
 	jfSessionID := si.ID
-	ids, err := p.expandItems(ctx, cmd.ItemIDs, cmd.Shuffled())
+	now := cmd.PlayMode() == model.PlayModeNow
+	single := len(cmd.ItemIDs) == 1
+	// Shuffling needs the whole track list; a single album played now is
+	// expanded too, so that its tracks are known as the queue context.
+	ids, requested, err := p.expandItems(ctx, cmd.ItemIDs, func(it BaseItem) bool {
+		return cmd.Shuffled() || (now && single && contextType(it.Type) == model.ContextAlbum)
+	})
 	if err != nil {
 		return err
 	}
@@ -452,7 +491,7 @@ func (p *Provider) playItems(ctx context.Context, si SessionInfo, cmd model.Comm
 		shuffleIDs(ids)
 		// A shuffled "play now" should not start with the track that is
 		// already playing (it would look as if nothing happened).
-		if cmd.PlayMode() == model.PlayModeNow && len(ids) > 1 && si.NowPlayingItem != nil && strings.EqualFold(ids[0], si.NowPlayingItem.ID) {
+		if now && len(ids) > 1 && si.NowPlayingItem != nil && strings.EqualFold(ids[0], si.NowPlayingItem.ID) {
 			if j := slices.IndexFunc(ids, func(id string) bool { return !strings.EqualFold(id, ids[0]) }); j > 0 {
 				k := j + rand.IntN(len(ids)-j)
 				if strings.EqualFold(ids[k], ids[0]) { // a duplicate of the current track
@@ -463,12 +502,31 @@ func (p *Provider) playItems(ctx context.Context, si SessionInfo, cmd model.Comm
 		}
 	}
 	pc := map[string]string{model.PlayModeNow: "PlayNow", model.PlayModeNext: "PlayNext", model.PlayModeLast: "PlayLast"}[cmd.PlayMode()]
-	return p.sendPlay(ctx, jfSessionID, pc, ids, 0, false)
+	if err := p.sendPlay(ctx, jfSessionID, pc, ids, 0, false); err != nil {
+		return err // the client's queue is unchanged: so is what we know about it
+	}
+	// The client's queue changed: what mediasync knew about it (context,
+	// jump position) no longer holds; a new context may start.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.contexts, sessionID)
+	delete(p.jumps, sessionID)
+	if t := contextType(requested[0].Type); now && single && t != "" {
+		p.startContextLocked(sessionID, si, model.QueueContext{Type: t, ID: requested[0].ID,
+			Name: strings.TrimSpace(requested[0].Name), Shuffled: cmd.Shuffled()}, ids)
+	}
+	return nil
 }
 
-// queueJump plays queue item index. Jellyfin has no "jump" command, so the
-// queue is sent again with PlayNow and a start index (clients such as
-// Finamp then rebuild their queue from these items).
+// queueJump plays queue item index. Jellyfin has no "jump" command:
+//   - On a queue mediasync started from a playlist or album (context), the
+//     whole list is sent again with PlayNow and the start index, so it stays
+//     the client's queue.
+//   - A short forward jump (up to JumpMaxSteps) is sent as that many
+//     NextTrack commands, which keeps the client's own queue, history,
+//     shuffle state and source.
+//   - Otherwise the reported queue is sent with PlayNow and the start index;
+//     clients such as Finamp then rebuild their queue from these items only.
 func (p *Provider) queueJump(ctx context.Context, sessionID, jfSessionID string, index int) error {
 	q, err := p.Queue(ctx, sessionID)
 	if err != nil {
@@ -484,5 +542,86 @@ func (p *Provider) queueJump(ctx context.Context, sessionID, jfSessionID string,
 	for _, it := range q.Items {
 		ids = append(ids, it.ItemID)
 	}
-	return p.sendPlay(ctx, jfSessionID, "PlayNow", ids, index, true)
+	p.mu.Lock()
+	c := p.contexts[sessionID]
+	jump := p.jumps[sessionID]
+	p.mu.Unlock()
+
+	if c != nil && !c.Shuffled {
+		if err := p.sendPlay(ctx, jfSessionID, "PlayNow", ids, index, true); err != nil {
+			return err
+		}
+		p.mu.Lock()
+		if c := p.contexts[sessionID]; c != nil {
+			// Still the same playlist; wait for the client to report again.
+			p.startContextLocked(sessionID, p.live[sessionID], c.QueueContext, c.itemIDs)
+		}
+		delete(p.jumps, sessionID)
+		p.mu.Unlock()
+		return nil
+	}
+
+	cur := -1
+	if q.CurrentIndex != nil {
+		cur = *q.CurrentIndex
+	}
+	if jump != nil && slices.Equal(jump.ids, ids) {
+		// Our earlier NextTrack jumps moved the client although it has not
+		// reported anything new (poll drops the record once it does).
+		cur = jump.index
+	}
+	if steps := index - cur; cur >= 0 && steps > 0 && steps <= p.cfg.JumpMaxSteps && p.stepsFit(ctx, steps) {
+		return p.stepForward(ctx, sessionID, jfSessionID, ids, cur, steps)
+	}
+
+	err = p.sendPlay(ctx, jfSessionID, "PlayNow", ids, index, true)
+	p.mu.Lock()
+	delete(p.jumps, sessionID)
+	if err == nil && c != nil {
+		// A shuffled context: the client's queue is now the reported list.
+		delete(p.contexts, sessionID)
+	}
+	p.mu.Unlock()
+	return err
+}
+
+// stepsFit reports whether steps NextTrack commands fit into the command's
+// time budget (each is a request plus the step delay).
+func (p *Provider) stepsFit(ctx context.Context, steps int) bool {
+	dl, ok := ctx.Deadline()
+	return !ok || time.Until(dl) > time.Duration(steps)*(p.cfg.JumpStepDelay+200*time.Millisecond)
+}
+
+// stepForward sends steps NextTrack commands, one at a time: each is
+// accepted by the server before the next, with JumpStepDelay in between so
+// the client handles them in order.
+func (p *Provider) stepForward(ctx context.Context, sessionID, jfSessionID string, ids []string, cur, steps int) error {
+	p.mu.Lock()
+	base := p.live[sessionID]
+	p.mu.Unlock()
+	record := func(done int) {
+		p.mu.Lock()
+		p.jumps[sessionID] = &stepJump{baseTrack: nowPlayingID(base), baseQueue: queueOnlyRevision(base), ids: ids, index: cur + done}
+		p.mu.Unlock()
+	}
+	p.log.Debug("queue_jump as NextTrack commands", "session", sessionID, "from", cur, "steps", steps)
+	for done := 0; done < steps; done++ {
+		if done > 0 && p.cfg.JumpStepDelay > 0 {
+			select {
+			case <-time.After(p.cfg.JumpStepDelay):
+			case <-ctx.Done():
+				record(done)
+				return ctx.Err()
+			}
+		}
+		if err := p.client.PlaystateCommand(ctx, jfSessionID, "NextTrack", nil); err != nil {
+			record(done)
+			if done > 0 {
+				return model.Wrap(model.CodeOf(err), err, fmt.Sprintf("queue_jump stopped after %d of %d steps: %s", done, steps, model.AsError(err).Message))
+			}
+			return err
+		}
+	}
+	record(steps)
+	return nil
 }

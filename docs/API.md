@@ -355,9 +355,24 @@ Params: `{"session_id": "…"}` →
 {"session_id": "…", "available": true, "current_index": 0,
  "items": [{"index": 0, "item_id": "…", "title": "Track 1", "artists": ["Artist A"],
             "album": "Album X", "duration_ms": 180000, "artwork_url": "…"}],
- "source": "jellyfin"}
+ "source": "jellyfin",
+ "context": null}
 ```
-Without queue data: `{"session_id": "…", "available": false, "current_index": null, "items": [], "source": null}`.
+Without queue data: `{"session_id": "…", "available": false, "current_index": null, "items": [], "source": null, "context": null}`.
+
+**`context`** (optional, `null` when unknown) says where the queue came from:
+`{"type": "playlist" | "album", "id": "…", "name": "Road Trip", "shuffled": false}`.
+It is only known when **mediasync started the queue** with `play_items`
+`now` for a single playlist or album; clients do not report where their queue
+came from, and mediasync never guesses one. While a non-shuffled context is
+known, `items` is the **whole playlist or album in its order** (earlier
+tracks included), `source` is `"context"`, and `current_index` is the position
+of the track the client reports, or `null` until it reports one from the
+list (some clients report a remotely started track late, see
+docs/JELLYFIN.md). With a shuffled context, `items` stays what the client
+reports. The context ends when the client plays something outside it,
+reports upcoming tracks that do not follow its order, gets another
+`play_items`, or disappears. Starting and ending it emit `queue.changed`.
 Unknown item details stay `null`. See [Media features](#media-features-queue-lyrics-playlists)
 for where queues come from (and why on Jellyfin 12.x it is only a snapshot from the client's last track change).
 
@@ -390,7 +405,8 @@ Play one with `player.command` `play_items` (`item_ids: [id]`).
 | Feature | Jellyfin 12.x | Jellyfin 10.10 | Local MPRIS player |
 |---------|---------------|----------------|--------------------|
 | `queue` | only the queue the client sent with its last stop report (12.x stores it only then, verified on 12.2.0 and 12.4.0): empty until the client's first track change, then a snapshot from the last one | ✅ from `NowPlayingQueue` (clients must report it, e.g. Finamp's *Report queue to server*) | from its linked Jellyfin session only (MPRIS players do not expose queues here) |
-| `queue_jump` | with that snapshot (needs `queue`) | ✅ by re-sending the queue with `PlayNow` + start index: Jellyfin has no "jump" command, so clients such as Finamp rebuild their queue from it | via linked session |
+| `queue_jump` | with that snapshot or a context (needs `queue`) | ✅ | via linked session |
+| `context` | ✅ for queues mediasync started (`play_items` `now` of one playlist or album) | ✅ | via linked session |
 | `play_items` | ✅ clients with remote control that list `Audio` in `PlayableMediaTypes` | ✅ | via linked session |
 | `play_items_shuffle` | ✅ wherever `play_items` is (mediasync shuffles) | ✅ | via linked session |
 | `lyrics` | ✅ `/Audio/{id}/Lyrics` when the item `HasLyrics` | ✅ | ✅ from `xesam:asText` (Feishin publishes LRC there); or the Jellyfin item when the MPRIS track id contains one (Feishin does); or the linked session |
@@ -421,11 +437,31 @@ Play one with `player.command` `play_items` (`item_ids: [id]`).
   (`invalid_argument` elsewhere), needs the `play_items_shuffle`
   capability (`unsupported_capability` otherwise), and is verified like
   `play_items`. It does not switch the player's own shuffle mode.
+- **`queue_jump` strategy** (Jellyfin has no "jump" command):
+  1. On a **context** queue: the whole playlist or album is sent again with
+     `PlayNow` and the clicked index as start index (cut to the URL limit
+     around the target), so it stays the client's queue; the context is
+     kept.
+  2. A **short forward jump** (at most `jellyfin.queue_jump_max_steps`
+     tracks ahead, default 15): that many `NextTrack` commands, one at a
+     time, each accepted by the server before the next and separated by
+     `queue_jump_step_delay` (250 ms). The client keeps its own queue,
+     history, shuffle state and source. mediasync counts from where its
+     previous jump went as long as the client has not reported anything new
+     (clients such as Finamp keep reporting the old track for a while). It
+     relies on the reported queue matching the client's real queue; on
+     Jellyfin 12.x that is a snapshot from the client's last track change.
+     If the steps do not fit into `commands.timeout`, PlayNow is used.
+  3. Otherwise (backwards, the current track, too far, or steps disabled):
+     the reported queue is sent with `PlayNow` and the start index. Clients
+     such as Finamp then rebuild their queue from these tracks only: the
+     earlier tracks and the original source are lost on the client.
 - **Verification:** `queue_jump` is verified when the target track plays;
   `play_items` `now` when the track or the queue changes (a position reset
   on the same track does not count: some clients report a remotely
   started track late, e.g. Finamp, see docs/JELLYFIN.md, and then show the
-  previous track at 0:00; the result is `acknowledged` with a detail); `next`/`last`
+  previous track at 0:00; the result is `acknowledged` with a detail that
+  says whether the position restarted under the old track id); `next`/`last`
   only through a queue change, so they usually stay `acknowledged` on 12.x
   (the queue only changes with the client's next stop report). Jellyfin 10.10 ignores *empty* queue reports and
   can therefore keep showing an outdated queue after a client's queue

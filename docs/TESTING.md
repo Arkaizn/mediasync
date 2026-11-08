@@ -65,6 +65,8 @@ and method calls go through the actual daemon. Tests that need
 | New track after `queue_jump` reaches `session.updated`/`sessions.get`; a client that keeps reporting the old track (Finamp) gives `acknowledged` and no invented track; too-long error and its info log | `daemon` `TestEndToEndTrackAfterRemotePlayNow` |
 | Shuffled `play_items`: permutation of the input (playlist plus expanded album, all modes), URL budget with a random cut, no start with the playing track, capability gating; `shuffle` only on `play_items`; linked sessions borrow `play_items_shuffle`; end to end over the socket | `provider/jellyfin` `TestPlayItemsShuffleIsAPermutation`, `TestPlayItemsShuffleRespectsURLBudget`, `TestShuffledPlayNowDoesNotStartWithTheCurrentTrack`, `TestShuffledPlayItemsNeedsTheCapability`; `model` `TestShuffleOnlyForPlayItems`, `TestPlayItemsRequiredCapability`; `engine` `TestPlayItemsShuffleCapabilityAndLinkedRouting`; `daemon` `TestEndToEndPlayItemsShuffle`; `mediasyncctl` `TestSplitPlayItemsArgs` |
 | `set_shuffle`: MPRIS `Shuffle` write and gating (missing, read-only, no CanControl), Jellyfin `SetShuffleQueue` and gating on `SupportedCommands`, validation, end to end on a local player | `provider/mpris` `TestSetShuffle`, `TestShuffleCapabilityNeedsAWritableProperty`; `provider/jellyfin` `TestSetShuffleOnJellyfin`; `model` `TestSetShuffleRequiresTheShuffleCapability`; `daemon` `TestEndToEndSetShuffleOnLocalPlayer`; `mediasyncctl` `TestParseOnOff` |
+| `queue_jump` strategies: N `NextTrack` for short forward jumps, `PlayNow` beyond the limit / backwards / to the current track / with steps disabled / without time budget; counting from the previous jump for a stale-reporting client, reset on a fresh report | `provider/jellyfin` `TestQueueJumpForwardUsesNextTrackAndFallsBack`, `TestQueueJumpStepsDisabledAndBudget`, `TestQueueJumpStepsWithStaleReportingClient` |
+| Queue context: from a playlist (whole list, current index, jump with the whole list, end when playing elsewhere), album, shuffled, replaced by other `play_items`, checked against reported upcoming tracks, never guessed; position matching; `queue.changed` on start and end over the socket | `provider/jellyfin` `TestQueueContextFromPlaylist`, `TestQueueContextAlbumShuffleAndReplacement`, `TestQueueContextChecksReportedUpcomingTracks`, `TestContextPosition`; `daemon` `TestEndToEndQueueContext`; `mediasyncctl` `TestContextLine` |
 | MPRIS lyrics from `xesam:asText` | `provider/mpris` `TestLyricsFromMetadata` |
 | LRC parsing, LRCLIB client | `lyrics` |
 | Linked local session borrows queue/lyrics and routes queue commands; `queue.changed` without `session.updated`; view-only read caps; lyrics source order and fallback | `engine` `TestLinkedLocalBorrowsQueueLyricsAndRoutesCommands`, `TestQueueChangedEvents`, `TestViewOnlyKeepsReadOnlyCapabilities`, `TestLyricsSourcesInOrder` |
@@ -117,6 +119,11 @@ MEDIASYNC_IT_SESSION_BUS=1 go test -tags integration -v -run TestRealSessionBus 
   that declares `SetShuffleQueue`; the client receives the
   `GeneralCommand` with `ShuffleMode`, and its reported `PlaybackOrder`
   verifies both.
+- `TestRealJellyfinQueueContextAndJumps` starts the "Road Trip" playlist:
+  the session gets the playlist as its queue context (also on 12.x), and a
+  jump resends the whole playlist with the start index. On 10.10, which
+  exposes the reported queue, a forward jump is sent as `NextTrack`
+  commands.
 - `TestRealJellyfin` logs in through the daemon. It simulates a phone app
   that opens the real WebSocket control channel and applies commands, plus
   a view-only browser client. It checks classification, metadata,

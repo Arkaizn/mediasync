@@ -301,7 +301,7 @@ func (e *Engine) upsert(pe *providerEntry, s model.Session) {
 		if !meaningfulChange(&old.raw, &rest) {
 			// Only the queue changed: keep the session as consumers see it
 			// (no session.updated) and announce the queue change.
-			old.raw.QueueRevision = s.QueueRevision
+			old.raw.QueueRevision, old.raw.ReportedQueueRevision = s.QueueRevision, s.ReportedQueueRevision
 			old.raw.Playback.PositionMS = s.Playback.PositionMS
 			old.raw.Playback.PositionAt = s.Playback.PositionAt
 			old.raw.LastSeen = s.LastSeen
