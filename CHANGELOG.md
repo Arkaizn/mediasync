@@ -7,6 +7,18 @@ are versioned separately (see docs/API.md).
 
 ## [Unreleased]
 
+### Fixed
+- A Jellyfin session missing from a single poll was removed at once:
+  subscribers saw `session.removed`, `selection.changed` to auto and
+  `session.added` with the same id within 1–2 s (Finamp during some
+  `queue_jump`/`NextTrack` sequences), and its queue context and step-jump
+  state were lost. Sessions are now removed only after they have been
+  missing for the new `[jellyfin] remove_missing_after` (default `"6s"`;
+  `"0s"` = the old behaviour). Until then the session stays as it was
+  (selectable, explicit selection kept, context kept); commands are still
+  sent, and a 404 from the server gives `session_unavailable`. Blips and
+  removals are logged at info level.
+
 ### Added
 - Queue contexts survive a service restart (mediasyncd restarts itself
   after every package update): they are kept in the state file
