@@ -120,6 +120,17 @@ Clients:
   follow the list's order, and drops it otherwise. Until the client reports
   a track from the list (Finamp: after its 90-second controlled mode, see
   below), the position in the context is unknown.
+  Observed with Finamp 1.x on 12.4.0 right after the `Play` message: first
+  a report with the **old track** and a **changed queue snapshot**, then the
+  new track with the **pre-switch snapshot** (12.x keeps it until the next
+  stop report), and only later a snapshot in playlist order. So the context
+  stays pending while the old track is reported, whatever the snapshot
+  does (time box: 10 minutes; Finamp reports the real track only with its
+  next playback event after the 90 s); the upcoming order is only checked
+  against snapshots reported after the first context track; and the
+  context ends only on a real departure (a track outside it, a later
+  snapshot out of order, or no context track within the time box). Each
+  ending is logged at info level ("queue context ended", with the reason).
 - **`queue_jump` without losing the client's queue:** a short forward jump
   is sent as `NextTrack` commands instead of `PlayNow` (which makes Finamp
   rebuild its queue from the sent tracks, losing the earlier tracks, its

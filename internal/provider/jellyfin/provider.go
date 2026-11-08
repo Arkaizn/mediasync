@@ -449,8 +449,8 @@ func (p *Provider) poll(ctx context.Context) error {
 		}
 		id := p.SessionID(sessionServerID(si, server), si.DeviceID, si.Client)
 		p.updateContextLocked(id, si)
-		if j := p.jumps[id]; j != nil && (!strings.EqualFold(nowPlayingID(si), j.baseTrack) || queueOnlyRevision(si) != j.baseQueue) {
-			delete(p.jumps, id) // the session reported something new
+		if j := p.jumps[id]; j != nil && !strings.EqualFold(nowPlayingID(si), j.baseTrack) {
+			delete(p.jumps, id) // the session reported a new track
 		}
 		s := p.mapSession(si, server, now)
 		seen[s.ID] = true

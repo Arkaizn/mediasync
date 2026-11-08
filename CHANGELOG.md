@@ -7,6 +7,20 @@ are versioned separately (see docs/API.md).
 
 ## [Unreleased]
 
+### Fixed
+- Queue contexts ended about 1.5 s after `play_items` with Finamp (Jellyfin
+  12.4.0), so `sessions.queue` never showed one. Right after the `Play`
+  message Finamp reports the old track with a changed queue snapshot, then
+  the new track with the pre-switch snapshot. A context now stays pending
+  while the old track is reported (time box 10 minutes), checks the
+  upcoming order only against snapshots reported after the switch, and
+  ends only on a real departure. Endings are logged at info level with the
+  reason.
+- Consecutive `queue_jump` step jumps: the remembered position is kept
+  while the reported track is unchanged (a changed snapshot alone no longer
+  discards it); if the reported list changed in between, the jump is sent
+  with `PlayNow` instead of counting steps from an unreliable position.
+
 ### Added
 - Queue context: when mediasync starts a single playlist or album with
   `play_items` `now`, `sessions.queue` reports
