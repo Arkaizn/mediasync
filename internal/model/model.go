@@ -214,6 +214,11 @@ type Session struct {
 	// Hidden is set when the session is excluded from default listings:
 	// "duplicate", "mode", "view_only" or "stale".
 	Hidden string `json:"hidden,omitempty"`
+	// Expected is the track a remote command should have started while the
+	// player still reports the previous one (e.g. Finamp for up to 90 s
+	// after remote commands). Unconfirmed: Track and Playback stay what the
+	// player reports; nil when nothing is pending.
+	Expected *ExpectedTrack `json:"expected"`
 	// Kind summarises origin, controllability and status:
 	// "local", "remote_controllable", "remote_view_only", "stale", "disconnected".
 	Kind SessionKind `json:"kind"`
@@ -265,6 +270,12 @@ func (s Session) Clone() Session {
 	if s.Error != nil {
 		e := *s.Error
 		c.Error = &e
+	}
+	if s.Expected != nil {
+		e := *s.Expected
+		e.Track.Artists = slices.Clone(e.Track.Artists)
+		e.Track.AlbumArtists = slices.Clone(e.Track.AlbumArtists)
+		c.Expected = &e
 	}
 	// Remaining pointer fields point to immutable values by convention:
 	// providers always allocate fresh values and never mutate after publishing.
@@ -338,4 +349,23 @@ func (p Player) Matches(pattern string) bool {
 		}
 	}
 	return strings.ToLower(p.Name) == pattern
+}
+
+// Reasons for an expected track.
+const (
+	ExpectedPlayItems = "play_items"
+	ExpectedQueueJump = "queue_jump"
+	ExpectedNext      = "next"
+	ExpectedPrevious  = "previous"
+)
+
+// ExpectedTrack is what a remote command should be playing, not yet
+// reported by the player. Its position is unknown.
+type ExpectedTrack struct {
+	Track  Track     `json:"track"`
+	Since  time.Time `json:"since"`
+	Reason string    `json:"reason"`
+	// ContextIndex is the expected position in the session's queue context
+	// (see sessions.queue), if one is known.
+	ContextIndex *int `json:"context_index"`
 }

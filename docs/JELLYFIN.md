@@ -163,6 +163,31 @@ Clients:
   does not invent the track: such commands end as `acknowledged`, with a
   detail saying the player has not reported a new track. The fix belongs
   in Finamp.
+- **Showing what should be playing.** Because Finamp reports the previous
+  track for up to 90 s after a remote command (more while commands keep
+  coming), every client would show the wrong song until the user touches
+  the phone. When a `play_items` `now`, `queue_jump`, `next` or `previous`
+  ends `acknowledged` with the old track id still reported, the session
+  gets `expected` with the track mediasync sent (metadata from the item
+  cache / `GET /Items`), and `sessions.queue` may mark that position with
+  `current_expected`. The reported track, state and position are never
+  changed. For `next`/`previous` the target is only given where the order
+  is unambiguous: a queue context in its own order (not shuffled by
+  mediasync or the client) with a known (or expected) position; for
+  `previous` only near the start of a track (players restart it instead).
+  It ends when Finamp reports any other track, after 120 s, or with the
+  next command.
+- **Finamp's own shuffle reorders what it receives.** With its shuffle mode
+  on (`PlayState.PlaybackOrder` `Shuffle`, observed with Finamp 1.0.2 on
+  12.4.0), a `PlayNow` list is played and reported in Finamp's own random
+  order, so the reported upcoming tracks never follow the sent order. A
+  queue context is therefore checked by membership while the context was
+  shuffled by mediasync or the client reports shuffle on (re-evaluated with
+  every report, so switching shuffle on mid-playlist keeps the context): it
+  stays while the current and all upcoming tracks belong to it (repeats
+  allowed: with repeat on, Finamp reports tracks again) and ends when a
+  track outside it shows up. `sessions.queue` then shows the client's
+  reported list with the context, and `queue_jump` works in that list.
 - **Finamp's session drops out of `GET /Sessions` for about one poll**
   during some `queue_jump` / `NextTrack` sequences (Finamp on iPhone, 12.4.0)
   and comes back with the same device and client, i.e. the same mediasync

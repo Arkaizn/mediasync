@@ -37,6 +37,27 @@ type queueContext struct {
 	// current is the position of the reported track in itemIDs (-1: the
 	// reported track is not part of the context, or nothing reported yet).
 	current int
+	// membership: the context is checked by membership, not order, because
+	// it was shuffled by mediasync or the client's own shuffle is on (Finamp
+	// reorders what it receives). Then sessions.queue shows the client's
+	// reported list instead of the context order.
+	membership bool
+}
+
+// clientShuffles reports whether the client says its shuffle mode is on.
+func clientShuffles(si SessionInfo) bool {
+	return strings.EqualFold(si.PlayState.PlaybackOrder, "Shuffle")
+}
+
+// allInContext reports whether every reported upcoming track is part of
+// the context (repeats allowed: with repeat on, tracks come again).
+func allInContext(ids []string, queue []QueueEntry) bool {
+	for _, e := range queue {
+		if !slices.ContainsFunc(ids, func(x string) bool { return strings.EqualFold(x, e.ID) }) {
+			return false
+		}
+	}
+	return true
 }
 
 // contextPendingTimeout bounds how long a context waits for the client to
@@ -129,6 +150,9 @@ func (p *Provider) updateContextLocked(id string, si SessionInfo) {
 	}
 	track, queue := nowPlayingID(si), queueOnlyRevision(si)
 	inContext := slices.ContainsFunc(c.itemIDs, func(x string) bool { return strings.EqualFold(x, track) })
+	// Re-evaluated with every report: the client may switch its shuffle on
+	// or off while the context plays.
+	c.membership = c.Shuffled || clientShuffles(si)
 	end := func(reason string) {
 		p.log.Info("queue context ended", "session", id, "context", c.Name, "context_id", c.ID, "reason", reason)
 		delete(p.contexts, id)
@@ -165,6 +189,16 @@ func (p *Provider) updateContextLocked(id string, si SessionInfo) {
 	// Only a snapshot reported after the switch says anything about the
 	// client's queue now; the one that came with the switch may be older.
 	checkQueue := queue != c.switchQueue && len(si.NowPlayingQueue) > 0
+	if c.membership {
+		// Shuffled (by mediasync or the client): any order, but only tracks
+		// of the context.
+		if checkQueue && !allInContext(c.itemIDs, si.NowPlayingQueue) {
+			end("an upcoming track is not part of the context")
+			return
+		}
+		c.current = contextPosition(c.itemIDs, track, nil, false, max(c.current, 0))
+		return
+	}
 	pos := contextPosition(c.itemIDs, track, si.NowPlayingQueue, checkQueue, max(c.current, 0))
 	if pos < 0 {
 		end("upcoming tracks do not follow the context order")
@@ -177,7 +211,8 @@ func (p *Provider) updateContextLocked(id string, si SessionInfo) {
 // (p.mu held). before is the session as reported before the command.
 func (p *Provider) startContextLocked(id string, before SessionInfo, qc model.QueueContext, ids []string) {
 	p.contexts[id] = &queueContext{QueueContext: qc, itemIDs: ids, pending: true,
-		baseTrack: nowPlayingID(before), startedAt: p.now(), current: -1}
+		baseTrack: nowPlayingID(before), startedAt: p.now(), current: -1,
+		membership: qc.Shuffled || clientShuffles(before)}
 }
 
 // contextRevision is part of the session's queue revision, so that a
@@ -186,7 +221,8 @@ func contextRevision(c *queueContext) string {
 	if c == nil {
 		return ""
 	}
-	return "ctx:" + c.ID + ":" + strconv.FormatBool(c.Shuffled) + ":" + strconv.FormatBool(c.pending) + ":" + strconv.Itoa(c.current)
+	return "ctx:" + c.ID + ":" + strconv.FormatBool(c.Shuffled) + ":" + strconv.FormatBool(c.membership) + ":" +
+		strconv.FormatBool(c.pending) + ":" + strconv.Itoa(c.current)
 }
 
 // contextType maps a Jellyfin item type to a context type ("" if none).
@@ -262,7 +298,7 @@ func (p *Provider) restoreContexts(raw json.RawMessage) {
 		}
 		c := &queueContext{
 			QueueContext: model.QueueContext{Type: sc.Type, ID: sc.ID, Name: sc.Name, Shuffled: sc.Shuffled},
-			itemIDs:      sc.ItemIDs, pending: true, current: -1, startedAt: p.now(),
+			itemIDs:      sc.ItemIDs, pending: true, current: -1, startedAt: p.now(), membership: sc.Shuffled,
 		}
 		if sc.Current >= 0 && sc.Current < len(sc.ItemIDs) {
 			c.current = sc.Current

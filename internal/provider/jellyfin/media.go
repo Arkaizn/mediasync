@@ -173,9 +173,14 @@ func (p *Provider) Queue(ctx context.Context, sessionID string) (model.Queue, er
 	pub := p.published[sessionID]
 	var qc *model.QueueContext
 	var ctxIDs []string
-	ctxCurrent := -1
+	ctxCurrent, ctxInOrder := -1, false
+	var expectedIndex *int
+	if e := p.expected[sessionID]; e != nil && e.active {
+		expectedIndex = e.contextIndex
+	}
 	if c := p.contexts[sessionID]; c != nil {
 		qc = model.Ptr(c.QueueContext)
+		ctxInOrder = !c.membership
 		ctxIDs = slices.Clone(c.itemIDs)
 		ctxCurrent = c.current // the reported track's position, if it is in the context
 	}
@@ -192,12 +197,16 @@ func (p *Provider) Queue(ctx context.Context, sessionID string) (model.Queue, er
 	if si.NowPlayingItem != nil {
 		known = append(known, *si.NowPlayingItem)
 	}
-	if qc != nil && !qc.Shuffled {
+	if qc != nil && ctxInOrder {
 		// The whole playlist or album in its order, earlier tracks
 		// included; the current position only once the client reported it.
 		q.Available, q.Source, q.Items = true, model.Ptr(model.QueueSourceContext), p.queueItems(ctx, ctxIDs, known)
 		if ctxCurrent >= 0 {
 			q.CurrentIndex = model.Ptr(ctxCurrent)
+		}
+		if expectedIndex != nil && *expectedIndex < len(q.Items) {
+			// Where the last command should have got to, not yet reported.
+			q.CurrentIndex, q.CurrentExpected = model.Ptr(*expectedIndex), true
 		}
 		return q, nil
 	}
@@ -506,12 +515,18 @@ func (p *Provider) playItems(ctx context.Context, sessionID string, si SessionIn
 	// The client's queue changed: what mediasync knew about it (context,
 	// jump position) no longer holds; a new context may start.
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	delete(p.contexts, sessionID)
 	delete(p.jumps, sessionID)
+	var ctxIndex *int
 	if t := contextType(requested[0].Type); now && single && t != "" {
 		p.startContextLocked(sessionID, si, model.QueueContext{Type: t, ID: requested[0].ID,
 			Name: strings.TrimSpace(requested[0].Name), Shuffled: cmd.Shuffled()}, ids)
+		ctxIndex = model.Ptr(0)
+	}
+	p.mu.Unlock()
+	if now {
+		// The first sent track should be playing now.
+		p.recordExpected(ctx, sessionID, si, ids[0], model.ExpectedPlayItems, ctxIndex)
 	}
 	return nil
 }
@@ -525,7 +540,7 @@ func (p *Provider) playItems(ctx context.Context, sessionID string, si SessionIn
 //     shuffle state and source.
 //   - Otherwise the reported queue is sent with PlayNow and the start index;
 //     clients such as Finamp then rebuild their queue from these items only.
-func (p *Provider) queueJump(ctx context.Context, sessionID, jfSessionID string, index int) error {
+func (p *Provider) queueJump(ctx context.Context, sessionID, jfSessionID string, index int) (err error) {
 	q, err := p.Queue(ctx, sessionID)
 	if err != nil {
 		return err
@@ -543,9 +558,26 @@ func (p *Provider) queueJump(ctx context.Context, sessionID, jfSessionID string,
 	p.mu.Lock()
 	c := p.contexts[sessionID]
 	jump := p.jumps[sessionID]
+	base := p.live[sessionID]
+	// poll updates the context (membership, position): read it here, under
+	// the lock, and use only these copies below.
+	inOrderContext := c != nil && !c.membership
+	var ctxIndex *int
+	if c != nil {
+		if !c.membership {
+			ctxIndex = model.Ptr(index)
+		} else if i := contextPosition(c.itemIDs, ids[index], nil, false, 0); i >= 0 {
+			ctxIndex = model.Ptr(i)
+		}
+	}
 	p.mu.Unlock()
+	defer func() {
+		if err == nil { // whichever way it was sent: this item should play
+			p.recordExpected(ctx, sessionID, base, ids[index], model.ExpectedQueueJump, ctxIndex)
+		}
+	}()
 
-	if c != nil && !c.Shuffled {
+	if inOrderContext {
 		if err := p.sendPlay(ctx, jfSessionID, "PlayNow", ids, index, true); err != nil {
 			return err
 		}
@@ -580,9 +612,11 @@ func (p *Provider) queueJump(ctx context.Context, sessionID, jfSessionID string,
 	err = p.sendPlay(ctx, jfSessionID, "PlayNow", ids, index, true)
 	p.mu.Lock()
 	delete(p.jumps, sessionID)
-	if err == nil && c != nil {
-		// A shuffled context: the client's queue is now the reported list.
-		delete(p.contexts, sessionID)
+	if c := p.contexts[sessionID]; err == nil && c != nil {
+		// A shuffled context: the client's queue is now (part of) the
+		// reported list, all of it from the context. Keep it, waiting for
+		// the client to report again.
+		p.startContextLocked(sessionID, p.live[sessionID], c.QueueContext, c.itemIDs)
 	}
 	p.mu.Unlock()
 	return err

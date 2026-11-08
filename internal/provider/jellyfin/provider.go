@@ -145,6 +145,8 @@ type Provider struct {
 	// first successful poll happened (restored contexts get the same grace).
 	missingSince map[string]time.Time
 	firstPoll    time.Time
+	// expected: what a remote command should have started (see expected.go).
+	expected map[string]*expectation
 	// persistMu orders saves; lastSaved is the last state handed to SaveState.
 	persistMu sync.Mutex
 	lastSaved string
@@ -185,6 +187,7 @@ func New(cfg Config, log *slog.Logger) (*Provider, error) {
 		published:    map[string]model.Session{},
 		contexts:     map[string]*queueContext{},
 		missingSince: map[string]time.Time{},
+		expected:     map[string]*expectation{},
 		jumps:        map[string]*stepJump{},
 		state:        model.ProviderStarting,
 	}
@@ -470,6 +473,7 @@ func (p *Provider) poll(ctx context.Context) error {
 		}
 		id := p.SessionID(sessionServerID(si, server), si.DeviceID, si.Client)
 		p.updateContextLocked(id, si)
+		p.updateExpectedLocked(id, si)
 		if j := p.jumps[id]; j != nil && !strings.EqualFold(nowPlayingID(si), j.baseTrack) {
 			delete(p.jumps, id) // the session reported a new track
 		}
@@ -534,6 +538,32 @@ func (p *Provider) poll(ctx context.Context) error {
 	return nil
 }
 
+// trackOf maps an item to the session track shape.
+func (p *Provider) trackOf(item BaseItem) model.Track {
+	t := model.Track{
+		Title:     model.StrPtr(strings.TrimSpace(item.Name)),
+		Album:     model.StrPtr(strings.TrimSpace(item.Album)),
+		TrackID:   model.StrPtr(item.ID),
+		MediaType: model.StrPtr(firstNonEmpty(item.MediaType, item.Type)),
+	}
+	if len(item.Artists) > 0 {
+		t.Artists = slices.Clone(item.Artists)
+	}
+	for _, a := range item.AlbumArtists {
+		if a.Name != "" {
+			t.AlbumArtists = append(t.AlbumArtists, a.Name)
+		}
+	}
+	if len(t.AlbumArtists) == 0 && item.AlbumArtist != "" {
+		t.AlbumArtists = []string{item.AlbumArtist}
+	}
+	if item.RunTimeTicks != nil && *item.RunTimeTicks > 0 {
+		t.DurationMS = model.Ptr(*item.RunTimeTicks / ticksPerMS)
+	}
+	t.ArtworkURL = p.artworkFor(item)
+	return t
+}
+
 // dropSessionLocked forgets a removed session (p.mu held).
 func (p *Provider) dropSessionLocked(id string) {
 	if c := p.contexts[id]; c != nil {
@@ -544,6 +574,7 @@ func (p *Provider) dropSessionLocked(id string) {
 	delete(p.contexts, id)
 	delete(p.jumps, id)
 	delete(p.missingSince, id)
+	delete(p.expected, id)
 }
 
 func (p *Provider) fetchSessions(ctx context.Context) ([]SessionInfo, time.Time, error) {
@@ -642,32 +673,7 @@ func (p *Provider) mapSession(si SessionInfo, server *PublicSystemInfo, now time
 	}
 
 	// Track.
-	s.Track = model.Track{
-		Title:     model.StrPtr(strings.TrimSpace(item.Name)),
-		Album:     model.StrPtr(strings.TrimSpace(item.Album)),
-		TrackID:   model.StrPtr(item.ID),
-		MediaType: model.StrPtr(firstNonEmpty(item.MediaType, item.Type)),
-	}
-	if len(item.Artists) > 0 {
-		s.Track.Artists = slices.Clone(item.Artists)
-	}
-	for _, a := range item.AlbumArtists {
-		if a.Name != "" {
-			s.Track.AlbumArtists = append(s.Track.AlbumArtists, a.Name)
-		}
-	}
-	if len(s.Track.AlbumArtists) == 0 && item.AlbumArtist != "" {
-		s.Track.AlbumArtists = []string{item.AlbumArtist}
-	}
-	if item.RunTimeTicks != nil && *item.RunTimeTicks > 0 {
-		s.Track.DurationMS = model.Ptr(*item.RunTimeTicks / ticksPerMS)
-	}
-	switch {
-	case item.ImageTags["Primary"] != "":
-		s.Track.ArtworkURL = model.Ptr(p.client.ImageURL(item.ID, item.ImageTags["Primary"]))
-	case item.AlbumID != "" && item.AlbumPrimaryImageTag != "":
-		s.Track.ArtworkURL = model.Ptr(p.client.ImageURL(item.AlbumID, item.AlbumPrimaryImageTag))
-	}
+	s.Track = p.trackOf(*item)
 
 	// Playback.
 	ps := si.PlayState
@@ -755,7 +761,10 @@ func (p *Provider) mapSession(si SessionInfo, server *PublicSystemInfo, now time
 	// exposes none (12.x before the client's next stop report).
 	if c := p.contexts[s.ID]; (len(si.NowPlayingQueue) > 0 || c != nil) && s.Status != model.StatusStale {
 		s.Capabilities = append(s.Capabilities, model.CapQueue)
-		s.QueueRevision = queueRevision(si) + contextRevision(c)
+		s.QueueRevision = queueRevision(si) + contextRevision(c) + expectedRevision(p.expected[s.ID])
+	}
+	if e := p.expected[s.ID]; e != nil && e.active {
+		s.Expected = e.public()
 	}
 	// Always set, so that a queue mediasync starts (a context) is never
 	// mistaken for the client reporting a new queue.
@@ -858,6 +867,11 @@ func (p *Provider) Command(ctx context.Context, sessionID string, cmd model.Comm
 		return model.Errorf(model.ErrUnsupported, "the Jellyfin client does not support %q", cmd.Name)
 	}
 	jfID := si.ID
+	// A new command replaces what an earlier one led us to expect.
+	p.mu.Lock()
+	prevExpected := p.expected[sessionID]
+	delete(p.expected, sessionID)
+	p.mu.Unlock()
 	var err error
 	switch cmd.Name {
 	case model.CmdPlay:
@@ -904,6 +918,9 @@ func (p *Provider) Command(ctx context.Context, sessionID string, cmd model.Comm
 		err = p.queueJump(ctx, sessionID, jfID, *cmd.Index)
 	default:
 		return model.Errorf(model.ErrUnsupported, "unknown command %q", cmd.Name)
+	}
+	if err == nil && (cmd.Name == model.CmdNext || cmd.Name == model.CmdPrevious) {
+		p.expectStep(ctx, sessionID, si, pub, prevExpected, cmd.Name)
 	}
 	if err != nil {
 		p.mu.Lock()

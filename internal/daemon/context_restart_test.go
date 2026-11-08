@@ -71,9 +71,13 @@ func TestAcceptanceQueueContextWithFinampAndRestarts(t *testing.T) {
 	// check waits until sessions.queue shows the context with the whole
 	// playlist and the expected current index (-1: null), then requires it
 	// to stay that way for a few more polls.
-	check := func(step string, wantCurrent int) {
+	check := func(step string, wantCurrent int, wantExpected ...bool) {
 		t.Helper()
+		expected := len(wantExpected) > 0 && wantExpected[0]
 		ok := func(q model.Queue) bool {
+			if q.CurrentExpected != expected {
+				return false
+			}
 			if q.Context == nil || q.Context.ID != plID || q.Context.Name != "Electronic" || q.Source == nil || *q.Source != "context" ||
 				len(q.Items) != 10 || !slices.EqualFunc(q.Items, playlist, func(it model.QueueItem, id string) bool { return it.ItemID == id }) {
 				return false
@@ -87,7 +91,7 @@ func TestAcceptanceQueueContextWithFinampAndRestarts(t *testing.T) {
 		deadline := time.Now().Add(wait)
 		for q = call[model.Queue](t, c, "sessions.queue", map[string]any{"session_id": ph}); !ok(q); q = call[model.Queue](t, c, "sessions.queue", map[string]any{"session_id": ph}) {
 			if time.Now().After(deadline) {
-				t.Fatalf("%s: queue context=%+v source=%v items=%d current=%v", step, q.Context, q.Source, len(q.Items), q.CurrentIndex)
+				t.Fatalf("%s: queue context=%+v source=%v items=%d current=%v expected=%v", step, q.Context, q.Source, len(q.Items), q.CurrentIndex, q.CurrentExpected)
 			}
 			time.Sleep(50 * time.Millisecond)
 		}
@@ -116,12 +120,16 @@ func TestAcceptanceQueueContextWithFinampAndRestarts(t *testing.T) {
 	if got := h.jf.ClientState(phone.SessionID).Received; !strings.HasPrefix(got[len(got)-1], "Play(PlayNow:"+playlist[0]) {
 		t.Fatalf("phone received %v", got)
 	}
-	check("after play_items", -1)
+	// The old track is still reported: the playlist's first track is the
+	// expected position (marked as such).
+	check("after play_items", 0, true)
 
 	// (1) Old track, changed queue snapshot (Finamp's controlled mode).
 	h.jf.Update(phone.SessionID, func(c *fakejellyfin.Client) { c.Queue = queueEntries(old[5:60]); c.PositionTicks = 0 })
-	check("1: old track, changed snapshot", -1)
+	check("1: old track, changed snapshot", 0, true)
 	restart("1")
+	// The expectation is not kept across a restart: the reported (old)
+	// track is not in the playlist, so no position.
 	check("1: after a restart while pending", -1)
 
 	// (2) The new track, with the stale pre-switch snapshot.

@@ -117,7 +117,8 @@ position as `position_ms + (now - position_at) * (rate ?? 1)` while
   "kind": "remote_controllable",
   "linked": ["…"],
   "duplicate_of": "…",
-  "hidden": "duplicate"
+  "hidden": "duplicate",
+  "expected": null
 }
 ```
 
@@ -137,6 +138,7 @@ position as `position_ms + (now - position_at) * (rate ?? 1)` while
 | `linked` | On a local session: IDs of remote sessions recognised as the same playback. |
 | `duplicate_of` | On a hidden remote session: the local session that represents it. |
 | `hidden` | Present when excluded from default listings: `duplicate`, `mode`, `view_only`, `stale`. |
+| `expected` | `null`, or the track a remote command should have started while the player **still reports the previous one** (Finamp does this for up to 90 s after remote commands, see docs/JELLYFIN.md): `{"track": {…same shape as track…}, "since": "<RFC3339>", "reason": "play_items" \| "queue_jump" \| "next" \| "previous", "context_index": <int\|null>}`. **Unconfirmed**: `track`, `playback` and the position stay what the player reports; the expected track's position is unknown (do not extrapolate it). Set when a command ends `acknowledged` because the player still reports the previous track id and the target is known: the first track sent (`play_items` `now`), the queue item (`queue_jump`), or the next/previous track of a queue context in its own order with a known position (`next`/`previous`; otherwise `null`). Cleared (with `session.updated`) when the player reports any other track, after 120 s, or with the next command. Not kept across a service restart. |
 | `track.artwork_url` | Never contains credentials. `file://` URLs from local players are passed through. |
 
 ## Selection
@@ -360,6 +362,10 @@ Params: `{"session_id": "…"}` →
 ```
 Without queue data: `{"session_id": "…", "available": false, "current_index": null, "items": [], "source": null, "context": null}`.
 
+**`current_expected`** (optional, `true` only): while the session has an
+`expected` track with a `context_index` and the context is shown in its
+order, `current_index` is that expected position, not the reported track's.
+
 **`context`** (optional, `null` when unknown) says where the queue came from:
 `{"type": "playlist" | "album", "id": "…", "name": "Road Trip", "shuffled": false}`.
 It is only known when **mediasync started the queue** with `play_items`
@@ -369,10 +375,16 @@ known, `items` is the **whole playlist or album in its order** (earlier
 tracks included), `source` is `"context"`, and `current_index` is the position
 of the track the client reports, or `null` while that track is not part of
 the list (some clients report a remotely started track late, see
-docs/JELLYFIN.md). With a shuffled context, `items` stays what the client
-reports. The context ends when the client plays something outside it,
+docs/JELLYFIN.md). With a shuffled context, **or while the client's own
+shuffle is on** (`playback.shuffle`), `items` is what the client reports
+(`"source": "jellyfin"`, `current_index` into that list), with `context`
+still set, and the context is checked by membership: it stays while the
+reported track and all reported upcoming tracks belong to it (in any order,
+repeats allowed for repeat mode). Otherwise the upcoming tracks must follow
+the context order. The context ends when the client plays something outside it,
 reports (after it switched to the context) upcoming tracks that do not
-follow its order, never reports a context track within 10 minutes, gets
+follow its order (or, checked by membership, an upcoming track outside it),
+never reports a context track within 10 minutes, gets
 another `play_items`, or disappears. Starting and ending it emit `queue.changed`.
 Contexts survive a service restart (they are kept in the state file) and are
 checked again against the session's first report afterwards.
