@@ -3,6 +3,7 @@ package jellyfin
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"slices"
 	"strconv"
 	"strings"
@@ -33,7 +34,8 @@ type queueContext struct {
 	// (the server keeps it until the client's next stop report), so the
 	// upcoming order is only checked against later snapshots.
 	switchQueue string
-	// current is the position of the reported track in itemIDs (-1: unknown).
+	// current is the position of the reported track in itemIDs (-1: the
+	// reported track is not part of the context, or nothing reported yet).
 	current int
 }
 
@@ -139,9 +141,16 @@ func (p *Provider) updateContextLocked(id string, si SessionInfo) {
 			// The first context track (or, after waiting, the old track
 			// that is also part of the context).
 			c.pending, c.switchQueue = false, queue
-			c.current = contextPosition(c.itemIDs, track, nil, false, 0)
+			c.current = contextPosition(c.itemIDs, track, nil, false, max(c.current, 0))
 		case stillOld && !timedOut:
 			// Still the previous track, whatever the queue snapshot does.
+			// If that track is part of the context (a restored context, or
+			// a jump within it), its position is still what is reported.
+			if inContext {
+				c.current = contextPosition(c.itemIDs, track, nil, false, max(c.current, 0))
+			} else {
+				c.current = -1
+			}
 		case stillOld:
 			end("timeout: the client never reported a track of the context")
 		default:
@@ -187,6 +196,91 @@ func contextType(itemType string) string {
 		return model.ContextPlaylist
 	case strings.EqualFold(itemType, "MusicAlbum"):
 		return model.ContextAlbum
+	}
+	return ""
+}
+
+// savedContext is a queue context as kept in the state file, so that it
+// survives a service restart (mediasyncd restarts itself after updates).
+type savedContext struct {
+	Type      string    `json:"type"`
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	Shuffled  bool      `json:"shuffled"`
+	ItemIDs   []string  `json:"item_ids"`
+	Current   int       `json:"current"`
+	Pending   bool      `json:"pending,omitempty"`
+	BaseTrack string    `json:"base_track,omitempty"`
+	StartedAt time.Time `json:"started_at"`
+}
+
+type savedState struct {
+	Contexts map[string]savedContext `json:"queue_contexts"`
+}
+
+// persistContexts hands the contexts to Config.SaveState when they changed
+// (start, end, confirmation, position). Saves are ordered by persistMu, so
+// an older state never overwrites a newer one.
+func (p *Provider) persistContexts() {
+	if p.cfg.SaveState == nil {
+		return
+	}
+	p.persistMu.Lock()
+	defer p.persistMu.Unlock()
+	p.mu.Lock()
+	st := savedState{Contexts: map[string]savedContext{}}
+	for id, c := range p.contexts {
+		st.Contexts[id] = savedContext{Type: c.Type, ID: c.ID, Name: c.Name, Shuffled: c.Shuffled,
+			ItemIDs: c.itemIDs, Current: c.current, Pending: c.pending, BaseTrack: c.baseTrack, StartedAt: c.startedAt}
+	}
+	p.mu.Unlock()
+	b, err := json.Marshal(st)
+	if err != nil || string(b) == p.lastSaved {
+		return
+	}
+	p.lastSaved = string(b)
+	p.cfg.SaveState(b)
+}
+
+// restoreContexts loads contexts saved before a restart. Each comes back
+// pending and is re-validated with the session's first report: one that
+// was still waiting keeps waiting for the same old track; one that was
+// confirmed is confirmed again by a context track and ends on any other.
+// Contexts of sessions that are gone are dropped after the first poll.
+func (p *Provider) restoreContexts(raw json.RawMessage) {
+	if len(raw) == 0 {
+		return
+	}
+	var st savedState
+	if err := json.Unmarshal(raw, &st); err != nil {
+		p.log.Warn("ignoring unreadable saved queue contexts", "err", err)
+		return
+	}
+	for id, sc := range st.Contexts {
+		if len(sc.ItemIDs) == 0 || contextTypeValid(sc.Type) == "" {
+			continue
+		}
+		c := &queueContext{
+			QueueContext: model.QueueContext{Type: sc.Type, ID: sc.ID, Name: sc.Name, Shuffled: sc.Shuffled},
+			itemIDs:      sc.ItemIDs, pending: true, current: -1, startedAt: p.now(),
+		}
+		if sc.Current >= 0 && sc.Current < len(sc.ItemIDs) {
+			c.current = sc.Current
+		}
+		if sc.Pending {
+			c.baseTrack, c.startedAt = sc.BaseTrack, sc.StartedAt
+		}
+		p.contexts[id] = c
+	}
+	p.lastSaved = string(raw)
+	if n := len(p.contexts); n > 0 {
+		p.log.Info("restored queue contexts", "count", n)
+	}
+}
+
+func contextTypeValid(t string) string {
+	if t == model.ContextPlaylist || t == model.ContextAlbum {
+		return t
 	}
 	return ""
 }

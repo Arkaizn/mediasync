@@ -19,6 +19,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -68,6 +69,10 @@ type Config struct {
 	// as NextTrack commands (0: always PlayNow); JumpStepDelay separates them.
 	JumpMaxSteps  int
 	JumpStepDelay time.Duration
+	// SavedState is what SaveState last stored (queue contexts), restored
+	// on start; SaveState is called whenever it changes (may be nil).
+	SavedState json.RawMessage
+	SaveState  func(json.RawMessage)
 
 	// AllUsers includes sessions of other users (admin accounts only).
 	AllUsers      bool
@@ -130,6 +135,9 @@ type Provider struct {
 	// has not reported anything new.
 	contexts map[string]*queueContext
 	jumps    map[string]*stepJump
+	// persistMu orders saves; lastSaved is the last state handed to SaveState.
+	persistMu sync.Mutex
+	lastSaved string
 
 	media mediaCache
 }
@@ -156,7 +164,7 @@ func New(cfg Config, log *slog.Logger) (*Provider, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Provider{
+	p := &Provider{
 		cfg:       cfg,
 		log:       log.With("provider", Kind, "server", cfg.Name),
 		client:    client,
@@ -168,7 +176,9 @@ func New(cfg Config, log *slog.Logger) (*Provider, error) {
 		contexts:  map[string]*queueContext{},
 		jumps:     map[string]*stepJump{},
 		state:     model.ProviderStarting,
-	}, nil
+	}
+	p.restoreContexts(cfg.SavedState)
+	return p, nil
 }
 
 // Factory adapts New to provider.Factory. deps.Config must be a Config.
@@ -468,6 +478,15 @@ func (p *Provider) poll(ctx context.Context) error {
 			delete(p.jumps, id)
 		}
 	}
+	if p.pollCount == 1 {
+		// Contexts restored from the state file whose session is gone.
+		for id, c := range p.contexts {
+			if !seen[id] {
+				p.log.Info("queue context ended", "session", id, "context", c.Name, "context_id", c.ID, "reason", "session gone after restart")
+				delete(p.contexts, id)
+			}
+		}
+	}
 	p.state, p.message, p.lastErr = model.ProviderRunning, "", nil
 	st := p.statusLocked()
 	p.mu.Unlock()
@@ -480,6 +499,7 @@ func (p *Provider) poll(ctx context.Context) error {
 		}
 		sink.SetStatus(st)
 	}
+	p.persistContexts()
 	return nil
 }
 
@@ -843,6 +863,7 @@ func (p *Provider) Command(ctx context.Context, sessionID string, cmd model.Comm
 	if err != nil {
 		return err
 	}
+	p.persistContexts()
 	p.Refresh()
 	return nil
 }

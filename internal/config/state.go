@@ -31,6 +31,10 @@ type State struct {
 	Version   int       `json:"version"`
 	DeviceID  string    `json:"device_id"`
 	Overrides Overrides `json:"overrides"`
+	// ProviderState holds what providers keep across restarts (opaque to
+	// the service), by provider instance, e.g. the queue contexts of
+	// "jellyfin:home".
+	ProviderState map[string]json.RawMessage `json:"provider_state,omitempty"`
 }
 
 // LoadState reads the state file, creating a device id if needed. A corrupt

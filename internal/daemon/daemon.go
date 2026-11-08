@@ -4,7 +4,9 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"runtime"
@@ -51,6 +53,7 @@ type Service struct {
 	started time.Time
 
 	mu            sync.Mutex
+	saveMu        sync.Mutex // orders state file writes
 	cfg           config.Config
 	state         config.State
 	localEnabled  bool
@@ -180,6 +183,10 @@ func (s *Service) buildJellyfin(cfg config.Config, deviceID string) (map[string]
 	out := map[string]*jellyfin.Provider{}
 	host, _ := os.Hostname()
 	for _, srv := range cfg.Jellyfin.Servers {
+		instance := jellyfin.Kind + ":" + srv.Name
+		s.mu.Lock()
+		saved := s.state.ProviderState[instance]
+		s.mu.Unlock()
 		p, err := jellyfin.New(jellyfin.Config{
 			Name: srv.Name, URL: srv.URL, DeviceID: deviceID, DeviceName: host, Version: s.opts.Version,
 			PollInterval: cfg.Jellyfin.PollInterval.D(), RequestTimeout: cfg.Jellyfin.RequestTimeout.D(),
@@ -188,6 +195,8 @@ func (s *Service) buildJellyfin(cfg config.Config, deviceID string) (map[string]
 			JumpMaxSteps:            cfg.Jellyfin.QueueJumpMaxSteps, JumpStepDelay: cfg.Jellyfin.QueueJumpStepDelay.D(),
 			AllUsers: srv.AllUsers, IgnoreClients: srv.IgnoreClients, IgnoreDevices: srv.IgnoreDevices,
 			CAFile: srv.CAFile, HTTPClient: s.opts.HTTPClient, Credentials: s.creds,
+			SavedState: saved,
+			SaveState:  func(b json.RawMessage) { s.saveProviderState(instance, b) },
 		}, s.log)
 		if err != nil {
 			return nil, model.Errorf(model.ErrInvalidConfig, "jellyfin server %q: %s", srv.Name, model.AsError(err).Message)
@@ -303,14 +312,40 @@ func (s *Service) UpdateSettings(u config.Overrides) error {
 	s.mu.Lock()
 	s.state.Overrides = merged
 	s.localEnabled, s.remoteEnabled = local, remote
-	st := s.state
 	s.mu.Unlock()
-	if err := config.SaveState(s.opts.Paths.StateFile, st); err != nil {
+	if err := s.persistState(); err != nil {
 		s.log.Error("cannot persist settings", "err", err)
 		return err
 	}
 	s.applyProviders()
 	return nil
+}
+
+// saveProviderState stores what a provider keeps across restarts (its queue
+// contexts) in the state file.
+func (s *Service) saveProviderState(instance string, b json.RawMessage) {
+	s.mu.Lock()
+	if s.state.ProviderState == nil {
+		s.state.ProviderState = map[string]json.RawMessage{}
+	}
+	s.state.ProviderState[instance] = append(json.RawMessage(nil), b...)
+	s.mu.Unlock()
+	if err := s.persistState(); err != nil {
+		s.log.Error("cannot persist provider state", "provider", instance, "err", err)
+	}
+}
+
+// persistState writes the current state. Writers are serialised and each
+// writes the state as it is when its turn comes, so the file always ends up
+// with the newest state.
+func (s *Service) persistState() error {
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	s.mu.Lock()
+	st := s.state
+	st.ProviderState = maps.Clone(s.state.ProviderState)
+	s.mu.Unlock()
+	return config.SaveState(s.opts.Paths.StateFile, st)
 }
 
 func (s *Service) jellyfinProvider(name string) (*jellyfin.Provider, error) {

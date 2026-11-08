@@ -3,7 +3,7 @@
 | File | Purpose | Written by |
 |------|---------|------------|
 | `$XDG_CONFIG_HOME/mediasync/config.toml` (default `~/.config/mediasync/config.toml`) | Preferences and Jellyfin servers | you |
-| `$XDG_STATE_HOME/mediasync/state.json` (default `~/.local/state/mediasync/state.json`) | Settings changed at runtime, device ID | the service |
+| `$XDG_STATE_HOME/mediasync/state.json` (default `~/.local/state/mediasync/state.json`) | Settings changed at runtime, device ID, queue contexts (which playlist a session plays, so it survives restarts) | the service |
 | Secret Service, or `$XDG_STATE_HOME/mediasync/credentials.json` | Jellyfin access tokens | the service |
 | `$XDG_RUNTIME_DIR/mediasync/mediasync.sock` | API socket | the service |
 
