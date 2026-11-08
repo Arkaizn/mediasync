@@ -79,12 +79,16 @@ start() {
   H="Authorization: MediaBrowser Token=\"$TOKEN\""
   api -X POST "$URL/Library/VirtualFolders?name=Music&collectionType=music&refreshLibrary=true" \
     -H "$H" -H 'Content-Type: application/json' -d '{"LibraryOptions":{"PathInfos":[{"Path":"/media/music"}]}}' >/dev/null
-  for _ in $(seq 1 30); do
+  # Wait until the scan has read the tags, not just found the files: until
+  # then the tracks are named after the files ("01") and have no artist or
+  # album, and tests that look them up by title would skip.
+  for _ in $(seq 1 60); do
     n="$(api "$URL/Items?recursive=true&includeItemTypes=Audio" -H "$H" |
-      python3 -c 'import json,sys; print(json.load(sys.stdin)["TotalRecordCount"])')"
+      python3 -c 'import json,sys; print(sum(1 for i in json.load(sys.stdin)["Items"] if i["Name"].startswith("Track ") and i.get("Album") == "Album X"))')"
     [ "$n" -ge 3 ] && break
     sleep 2
   done
+  [ "$n" -ge 3 ] || echo "# warning: the library scan did not finish reading the test tags" >&2
   # A playlist [Track 3, Track 1] (deliberately not in name order).
   USER_ID="$(api "$URL/Users/Me" -H "$H" | python3 -c 'import json,sys; print(json.load(sys.stdin)["Id"])')"
   IDS="$(api "$URL/Items?recursive=true&includeItemTypes=Audio&sortBy=SortName" -H "$H" |

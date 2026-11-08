@@ -319,6 +319,11 @@ type simClient struct {
 	token    string
 	ws       *wsConn
 
+	// reportMu orders reports: progressLoop and readLoop both report, and a
+	// report built from an older state must not reach the server after a
+	// newer one (it would undo e.g. a pause and fake a later "play").
+	reportMu sync.Mutex
+
 	mu       sync.Mutex
 	items    []string
 	idx      int
@@ -412,7 +417,9 @@ func (s *simClient) state() map[string]any {
 }
 
 func (s *simClient) report(path, event string) {
-	st := s.state()
+	s.reportMu.Lock()
+	defer s.reportMu.Unlock()
+	st := s.state() // read under reportMu: the latest state goes out last
 	if event != "" {
 		st["EventName"] = event
 	}
