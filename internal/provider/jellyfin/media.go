@@ -559,6 +559,9 @@ func (p *Provider) queueJump(ctx context.Context, sessionID, jfSessionID string,
 	c := p.contexts[sessionID]
 	jump := p.jumps[sessionID]
 	base := p.live[sessionID]
+	// poll updates the context (membership, position): read it here, under
+	// the lock, and use only these copies below.
+	inOrderContext := c != nil && !c.membership
 	var ctxIndex *int
 	if c != nil {
 		if !c.membership {
@@ -574,7 +577,7 @@ func (p *Provider) queueJump(ctx context.Context, sessionID, jfSessionID string,
 		}
 	}()
 
-	if c != nil && !c.membership {
+	if inOrderContext {
 		if err := p.sendPlay(ctx, jfSessionID, "PlayNow", ids, index, true); err != nil {
 			return err
 		}
