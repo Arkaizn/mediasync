@@ -3,8 +3,10 @@ package jellyfin
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/arkaizn/mediasync/internal/model"
 )
@@ -18,22 +20,39 @@ type queueContext struct {
 	// itemIDs is the expanded track list in the order it was sent (the
 	// playlist order, or the shuffled order).
 	itemIDs []string
-	// pending: the client has not reported anything since the context was
-	// (re)started; base* is what it reported then. Clients such as Finamp
-	// keep reporting the previous track for a while after remote commands.
-	pending              bool
-	baseTrack, baseQueue string
+	// pending: the client has not reported a track of the context since it
+	// was (re)started. baseTrack is the track it reported then. Clients such
+	// as Finamp keep reporting the previous track (while their queue
+	// snapshot may change) for a while after remote commands, so only a
+	// reported context track ends this, a track outside it, or the time box.
+	pending   bool
+	baseTrack string
+	startedAt time.Time
+	// switchQueue is the queue snapshot reported together with the first
+	// context track. On Jellyfin 12.x that snapshot can predate the switch
+	// (the server keeps it until the client's next stop report), so the
+	// upcoming order is only checked against later snapshots.
+	switchQueue string
 	// current is the position of the reported track in itemIDs (-1: unknown).
 	current int
 }
 
+// contextPendingTimeout bounds how long a context waits for the client to
+// report one of its tracks. Finamp stays in its "controlled mode" for 90 s
+// after a remote command and then reports the real track only with its next
+// playback event (usually the next track change), so this is generous; a
+// client that ignored the command ends the context earlier, when it reports
+// a track outside it.
+const contextPendingTimeout = 10 * time.Minute
+
 // stepJump remembers where NextTrack jumps left a session's queue, as long
-// as the session reports nothing new (Finamp reports the old track for up to
-// 90 s after remote commands, so the reported position cannot be trusted).
+// as the session reports the same track (Finamp reports the old track, with
+// a changing queue snapshot, for up to 90 s after remote commands, so the
+// reported position cannot be trusted).
 type stepJump struct {
-	baseTrack, baseQueue string
-	ids                  []string // the queue items the jump was counted in
-	index                int      // where the jumps should have arrived
+	baseTrack string   // the track reported when the jump was sent
+	ids       []string // the queue items the jump was counted in
+	index     int      // where the jumps should have arrived
 }
 
 func nowPlayingID(si SessionInfo) string {
@@ -98,24 +117,48 @@ func followsInOrder(ids []string, i int, upcoming []string) bool {
 }
 
 // updateContextLocked re-evaluates the session's context against the latest
-// report (p.mu held). The context ends when the session plays something
-// outside it or reports upcoming tracks that do not follow its order.
+// report (p.mu held). The context ends when the client plays something
+// outside it, when a queue snapshot reported after the switch does not
+// follow its order, or when no context track is reported in time.
 func (p *Provider) updateContextLocked(id string, si SessionInfo) {
 	c := p.contexts[id]
 	if c == nil {
 		return
 	}
 	track, queue := nowPlayingID(si), queueOnlyRevision(si)
-	if c.pending && strings.EqualFold(track, c.baseTrack) && queue == c.baseQueue {
-		return // nothing new reported yet
-	}
-	c.pending = false
-	// Only a queue reported after the context started can be compared (on
-	// Jellyfin 12.x the server keeps an older snapshot until the next stop).
-	pos := contextPosition(c.itemIDs, track, si.NowPlayingQueue, queue != c.baseQueue, max(c.current, 0))
-	if pos < 0 {
-		p.log.Debug("queue context ended", "session", id, "context", c.ID)
+	inContext := slices.ContainsFunc(c.itemIDs, func(x string) bool { return strings.EqualFold(x, track) })
+	end := func(reason string) {
+		p.log.Info("queue context ended", "session", id, "context", c.Name, "context_id", c.ID, "reason", reason)
 		delete(p.contexts, id)
+	}
+	if c.pending {
+		stillOld := track == "" || strings.EqualFold(track, c.baseTrack)
+		timedOut := p.now().Sub(c.startedAt) > contextPendingTimeout
+		switch {
+		case inContext && (!stillOld || timedOut):
+			// The first context track (or, after waiting, the old track
+			// that is also part of the context).
+			c.pending, c.switchQueue = false, queue
+			c.current = contextPosition(c.itemIDs, track, nil, false, 0)
+		case stillOld && !timedOut:
+			// Still the previous track, whatever the queue snapshot does.
+		case stillOld:
+			end("timeout: the client never reported a track of the context")
+		default:
+			end("track outside the context")
+		}
+		return
+	}
+	if !inContext {
+		end("track outside the context")
+		return
+	}
+	// Only a snapshot reported after the switch says anything about the
+	// client's queue now; the one that came with the switch may be older.
+	checkQueue := queue != c.switchQueue && len(si.NowPlayingQueue) > 0
+	pos := contextPosition(c.itemIDs, track, si.NowPlayingQueue, checkQueue, max(c.current, 0))
+	if pos < 0 {
+		end("upcoming tracks do not follow the context order")
 		return
 	}
 	c.current = pos
@@ -125,7 +168,7 @@ func (p *Provider) updateContextLocked(id string, si SessionInfo) {
 // (p.mu held). before is the session as reported before the command.
 func (p *Provider) startContextLocked(id string, before SessionInfo, qc model.QueueContext, ids []string) {
 	p.contexts[id] = &queueContext{QueueContext: qc, itemIDs: ids, pending: true,
-		baseTrack: nowPlayingID(before), baseQueue: queueOnlyRevision(before), current: -1}
+		baseTrack: nowPlayingID(before), startedAt: p.now(), current: -1}
 }
 
 // contextRevision is part of the session's queue revision, so that a

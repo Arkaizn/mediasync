@@ -371,8 +371,9 @@ of the track the client reports, or `null` until it reports one from the
 list (some clients report a remotely started track late, see
 docs/JELLYFIN.md). With a shuffled context, `items` stays what the client
 reports. The context ends when the client plays something outside it,
-reports upcoming tracks that do not follow its order, gets another
-`play_items`, or disappears. Starting and ending it emit `queue.changed`.
+reports (after it switched to the context) upcoming tracks that do not
+follow its order, never reports a context track within 10 minutes, gets
+another `play_items`, or disappears. Starting and ending it emit `queue.changed`.
 Unknown item details stay `null`. See [Media features](#media-features-queue-lyrics-playlists)
 for where queues come from (and why on Jellyfin 12.x it is only a snapshot from the client's last track change).
 

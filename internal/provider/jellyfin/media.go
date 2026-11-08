@@ -565,10 +565,15 @@ func (p *Provider) queueJump(ctx context.Context, sessionID, jfSessionID string,
 	if q.CurrentIndex != nil {
 		cur = *q.CurrentIndex
 	}
-	if jump != nil && slices.Equal(jump.ids, ids) {
-		// Our earlier NextTrack jumps moved the client although it has not
-		// reported anything new (poll drops the record once it does).
+	switch {
+	case jump != nil && slices.Equal(jump.ids, ids):
+		// Our earlier NextTrack jumps moved the client although it still
+		// reports the old track (poll drops the record once that changes).
 		cur = jump.index
+	case jump != nil:
+		// The client moved, but the reported list changed since: neither
+		// position can be trusted for counting steps.
+		cur = -1
 	}
 	if steps := index - cur; cur >= 0 && steps > 0 && steps <= p.cfg.JumpMaxSteps && p.stepsFit(ctx, steps) {
 		return p.stepForward(ctx, sessionID, jfSessionID, ids, cur, steps)
@@ -601,7 +606,7 @@ func (p *Provider) stepForward(ctx context.Context, sessionID, jfSessionID strin
 	p.mu.Unlock()
 	record := func(done int) {
 		p.mu.Lock()
-		p.jumps[sessionID] = &stepJump{baseTrack: nowPlayingID(base), baseQueue: queueOnlyRevision(base), ids: ids, index: cur + done}
+		p.jumps[sessionID] = &stepJump{baseTrack: nowPlayingID(base), ids: ids, index: cur + done}
 		p.mu.Unlock()
 	}
 	p.log.Debug("queue_jump as NextTrack commands", "session", sessionID, "from", cur, "steps", steps)
