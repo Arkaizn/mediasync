@@ -117,7 +117,8 @@ position as `position_ms + (now - position_at) * (rate ?? 1)` while
   "kind": "remote_controllable",
   "linked": ["…"],
   "duplicate_of": "…",
-  "hidden": "duplicate"
+  "hidden": "duplicate",
+  "expected": null
 }
 ```
 
@@ -137,6 +138,7 @@ position as `position_ms + (now - position_at) * (rate ?? 1)` while
 | `linked` | On a local session: IDs of remote sessions recognised as the same playback. |
 | `duplicate_of` | On a hidden remote session: the local session that represents it. |
 | `hidden` | Present when excluded from default listings: `duplicate`, `mode`, `view_only`, `stale`. |
+| `expected` | `null`, or the track a remote command should have started while the player **still reports the previous one** (Finamp does this for up to 90 s after remote commands, see docs/JELLYFIN.md): `{"track": {…same shape as track…}, "since": "<RFC3339>", "reason": "play_items" \| "queue_jump" \| "next" \| "previous", "context_index": <int\|null>}`. **Unconfirmed**: `track`, `playback` and the position stay what the player reports; the expected track's position is unknown (do not extrapolate it). Set when a command ends `acknowledged` because the player still reports the previous track id and the target is known: the first track sent (`play_items` `now`), the queue item (`queue_jump`), or the next/previous track of a queue context in its own order with a known position (`next`/`previous`; otherwise `null`). Cleared (with `session.updated`) when the player reports any other track, after 120 s, or with the next command. Not kept across a service restart. |
 | `track.artwork_url` | Never contains credentials. `file://` URLs from local players are passed through. |
 
 ## Selection
@@ -359,6 +361,10 @@ Params: `{"session_id": "…"}` →
  "context": null}
 ```
 Without queue data: `{"session_id": "…", "available": false, "current_index": null, "items": [], "source": null, "context": null}`.
+
+**`current_expected`** (optional, `true` only): while the session has an
+`expected` track with a `context_index` and the context is shown in its
+order, `current_index` is that expected position, not the reported track's.
 
 **`context`** (optional, `null` when unknown) says where the queue came from:
 `{"type": "playlist" | "album", "id": "…", "name": "Road Trip", "shuffled": false}`.

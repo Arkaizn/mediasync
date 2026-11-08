@@ -163,6 +163,20 @@ Clients:
   does not invent the track: such commands end as `acknowledged`, with a
   detail saying the player has not reported a new track. The fix belongs
   in Finamp.
+- **Showing what should be playing.** Because Finamp reports the previous
+  track for up to 90 s after a remote command (more while commands keep
+  coming), every client would show the wrong song until the user touches
+  the phone. When a `play_items` `now`, `queue_jump`, `next` or `previous`
+  ends `acknowledged` with the old track id still reported, the session
+  gets `expected` with the track mediasync sent (metadata from the item
+  cache / `GET /Items`), and `sessions.queue` may mark that position with
+  `current_expected`. The reported track, state and position are never
+  changed. For `next`/`previous` the target is only given where the order
+  is unambiguous: a queue context in its own order (not shuffled by
+  mediasync or the client) with a known (or expected) position; for
+  `previous` only near the start of a track (players restart it instead).
+  It ends when Finamp reports any other track, after 120 s, or with the
+  next command.
 - **Finamp's own shuffle reorders what it receives.** With its shuffle mode
   on (`PlayState.PlaybackOrder` `Shuffle`, observed with Finamp 1.0.2 on
   12.4.0), a `PlayNow` list is played and reported in Finamp's own random

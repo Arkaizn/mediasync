@@ -7,6 +7,18 @@ are versioned separately (see docs/API.md).
 
 ## [Unreleased]
 
+### Added
+- Session field `expected` (API v1, additive): while a player still reports
+  the previous track after a remote command (Finamp for up to 90 s), the
+  track mediasync sent is shown as `expected` (`track`, `since`, `reason`
+  `play_items`/`queue_jump`/`next`/`previous`, `context_index`), clearly
+  unconfirmed: `track`, `playback` and the position stay what the player
+  reports. Set when the command ends `acknowledged` with the old track id;
+  cleared when another track is reported, after 120 s, or with the next
+  command. `next`/`previous` only where the order is unambiguous (a context
+  in its own order). `sessions.queue` gets `current_expected` when
+  `current_index` is that expected position.
+
 ### Fixed
 - Queue contexts ended when the client's own shuffle reordered the queue
   (Finamp 1.0.2 with shuffle on, Jellyfin 12.4.0: "upcoming tracks do not

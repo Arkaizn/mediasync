@@ -124,3 +124,12 @@ type LyricsSource interface {
 type ItemLyricsSource interface {
 	ItemLyrics(ctx context.Context, itemID string) (lyrics model.Lyrics, known bool, err error)
 }
+
+// ExpectationSource is implemented by providers that can tell which track a
+// remote command should have started. The engine calls ActivateExpected
+// when a command ends "acknowledged" because the player still reports the
+// previous track; the provider then publishes the session with Expected set
+// (if it knows the target) until the player reports something new.
+type ExpectationSource interface {
+	ActivateExpected(sessionID string)
+}

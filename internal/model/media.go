@@ -22,6 +22,9 @@ type Queue struct {
 	// Context is the playlist or album the queue was started from, when
 	// mediasync started it (nil otherwise; never guessed).
 	Context *QueueContext `json:"context"`
+	// CurrentExpected: CurrentIndex is the position of the session's
+	// expected track (not yet reported by the player), not of the reported one.
+	CurrentExpected bool `json:"current_expected,omitempty"`
 }
 
 // Queue context types.

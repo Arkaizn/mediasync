@@ -136,6 +136,10 @@ func (e *Engine) Command(ctx context.Context, sessionID string, cmd model.Comman
 		res.Outcome = model.OutcomeAcknowledged
 		res.Detail = fmt.Sprintf("the provider accepted the command but the expected state change was not observed within %s", verify)
 		if startsTrack(cmd) && after != nil && sameTrack(&targetBefore, after) {
+			// Show what should be playing, marked as unconfirmed.
+			if es, ok := targetProv.(provider.ExpectationSource); ok {
+				es.ActivateExpected(target)
+			}
 			res.Detail = fmt.Sprintf("the provider accepted the command, but the player has not reported a new track within %s: "+
 				"the session still shows the previous one (some clients report a remotely started track late or not at all)", verify)
 			if restarted(&targetBefore, after, start, e.opts.Now()) {

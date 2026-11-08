@@ -174,6 +174,10 @@ func (p *Provider) Queue(ctx context.Context, sessionID string) (model.Queue, er
 	var qc *model.QueueContext
 	var ctxIDs []string
 	ctxCurrent, ctxInOrder := -1, false
+	var expectedIndex *int
+	if e := p.expected[sessionID]; e != nil && e.active {
+		expectedIndex = e.contextIndex
+	}
 	if c := p.contexts[sessionID]; c != nil {
 		qc = model.Ptr(c.QueueContext)
 		ctxInOrder = !c.membership
@@ -199,6 +203,10 @@ func (p *Provider) Queue(ctx context.Context, sessionID string) (model.Queue, er
 		q.Available, q.Source, q.Items = true, model.Ptr(model.QueueSourceContext), p.queueItems(ctx, ctxIDs, known)
 		if ctxCurrent >= 0 {
 			q.CurrentIndex = model.Ptr(ctxCurrent)
+		}
+		if expectedIndex != nil && *expectedIndex < len(q.Items) {
+			// Where the last command should have got to, not yet reported.
+			q.CurrentIndex, q.CurrentExpected = model.Ptr(*expectedIndex), true
 		}
 		return q, nil
 	}
@@ -507,12 +515,18 @@ func (p *Provider) playItems(ctx context.Context, sessionID string, si SessionIn
 	// The client's queue changed: what mediasync knew about it (context,
 	// jump position) no longer holds; a new context may start.
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	delete(p.contexts, sessionID)
 	delete(p.jumps, sessionID)
+	var ctxIndex *int
 	if t := contextType(requested[0].Type); now && single && t != "" {
 		p.startContextLocked(sessionID, si, model.QueueContext{Type: t, ID: requested[0].ID,
 			Name: strings.TrimSpace(requested[0].Name), Shuffled: cmd.Shuffled()}, ids)
+		ctxIndex = model.Ptr(0)
+	}
+	p.mu.Unlock()
+	if now {
+		// The first sent track should be playing now.
+		p.recordExpected(ctx, sessionID, si, ids[0], model.ExpectedPlayItems, ctxIndex)
 	}
 	return nil
 }
@@ -526,7 +540,7 @@ func (p *Provider) playItems(ctx context.Context, sessionID string, si SessionIn
 //     shuffle state and source.
 //   - Otherwise the reported queue is sent with PlayNow and the start index;
 //     clients such as Finamp then rebuild their queue from these items only.
-func (p *Provider) queueJump(ctx context.Context, sessionID, jfSessionID string, index int) error {
+func (p *Provider) queueJump(ctx context.Context, sessionID, jfSessionID string, index int) (err error) {
 	q, err := p.Queue(ctx, sessionID)
 	if err != nil {
 		return err
@@ -544,7 +558,21 @@ func (p *Provider) queueJump(ctx context.Context, sessionID, jfSessionID string,
 	p.mu.Lock()
 	c := p.contexts[sessionID]
 	jump := p.jumps[sessionID]
+	base := p.live[sessionID]
+	var ctxIndex *int
+	if c != nil {
+		if !c.membership {
+			ctxIndex = model.Ptr(index)
+		} else if i := contextPosition(c.itemIDs, ids[index], nil, false, 0); i >= 0 {
+			ctxIndex = model.Ptr(i)
+		}
+	}
 	p.mu.Unlock()
+	defer func() {
+		if err == nil { // whichever way it was sent: this item should play
+			p.recordExpected(ctx, sessionID, base, ids[index], model.ExpectedQueueJump, ctxIndex)
+		}
+	}()
 
 	if c != nil && !c.membership {
 		if err := p.sendPlay(ctx, jfSessionID, "PlayNow", ids, index, true); err != nil {
