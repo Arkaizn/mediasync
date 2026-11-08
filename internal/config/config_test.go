@@ -91,6 +91,7 @@ func TestInvalidConfigs(t *testing.T) {
 		"negative steps": "[jellyfin]\nqueue_jump_max_steps = -1",
 		"too many steps": "[jellyfin]\nqueue_jump_max_steps = 51",
 		"slow steps":     "[jellyfin]\nqueue_jump_step_delay = \"3s\"",
+		"long missing":   "[jellyfin]\nremove_missing_after = \"10m\"",
 		"bad url":        "[[jellyfin.servers]]\nname = \"a\"\nurl = \"ftp://x\"",
 		"url with creds": "[[jellyfin.servers]]\nname = \"a\"\nurl = \"https://u:p@x\"",
 		"dup names":      "[[jellyfin.servers]]\nname = \"a\"\nurl = \"https://x\"\n[[jellyfin.servers]]\nname = \"a\"\nurl = \"https://y\"",

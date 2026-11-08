@@ -163,6 +163,15 @@ Clients:
   does not invent the track: such commands end as `acknowledged`, with a
   detail saying the player has not reported a new track. The fix belongs
   in Finamp.
+- **Finamp's session drops out of `GET /Sessions` for about one poll**
+  during some `queue_jump` / `NextTrack` sequences (Finamp on iPhone, 12.4.0)
+  and comes back with the same device and client, i.e. the same mediasync
+  session id. Removing it at once produced `session.removed`, a
+  `selection.changed` to auto and `session.added` within 1–2 s, and ended
+  its queue context. mediasync now removes a session only after it has
+  been missing for `remove_missing_after` (default 6 s), and logs "session
+  missing from poll", "session back in poll" and "session removed after
+  missing from polls" at info level.
 - **Feishin** (Linux) publishes its lyrics in MPRIS `xesam:asText` as LRC
   and puts the Jellyfin item id into `mpris:trackid`
   (`…/track/<item id>`). It has no MPRIS TrackList (no queue over MPRIS).
@@ -178,7 +187,8 @@ Clients:
 | Client without WebSocket, silent for > `stale_after` | `stale`, view-only, position `null` |
 | Server unreachable | all its sessions `disconnected` (not controllable), removed after `remove_disconnected_after` |
 | Token revoked (401) | provider `unauthenticated`, sessions removed |
-| Client stops playback / disconnects | session removed |
+| Client stops playback / disconnects | session removed once it has been missing from `GET /Sessions` for `remove_missing_after` (6 s) |
+| Session missing from one or two polls (Finamp during remote commands) | kept unchanged: no `session.removed`/`session.added`, selection and queue context kept; commands are still sent (`session_unavailable` if the server answers 404) |
 
 ## Client compatibility
 

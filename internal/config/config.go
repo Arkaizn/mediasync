@@ -106,6 +106,10 @@ type Jellyfin struct {
 	StaleAfter              Duration `toml:"stale_after"`
 	StalePausedAfter        Duration `toml:"stale_paused_after"`
 	RemoveDisconnectedAfter Duration `toml:"remove_disconnected_after"`
+	// RemoveMissingAfter: a session missing from the server's list is only
+	// removed after this long (Finamp's drops out for a poll during some
+	// remote commands). 0 removes it at once.
+	RemoveMissingAfter Duration `toml:"remove_missing_after"`
 	// QueueJumpMaxSteps: forward queue_jump by up to this many NextTrack
 	// commands (keeps the client's queue); further, or backwards, the queue
 	// is sent again with PlayNow. 0 always uses PlayNow.
@@ -167,8 +171,8 @@ func Default() Config {
 		Jellyfin: Jellyfin{
 			PollInterval: Duration(2 * time.Second), RequestTimeout: Duration(10 * time.Second),
 			StaleAfter: Duration(90 * time.Second), StalePausedAfter: Duration(15 * time.Minute),
-			RemoveDisconnectedAfter: Duration(5 * time.Minute),
-			QueueJumpMaxSteps:       15, QueueJumpStepDelay: Duration(250 * time.Millisecond),
+			RemoveDisconnectedAfter: Duration(5 * time.Minute), RemoveMissingAfter: Duration(6 * time.Second),
+			QueueJumpMaxSteps: 15, QueueJumpStepDelay: Duration(250 * time.Millisecond),
 		},
 		Credentials: Credentials{Store: "secret-service"},
 		IPC:         IPC{MaxClients: 32},
@@ -295,6 +299,7 @@ func (c Config) Validate() error {
 		{"jellyfin.stale_paused_after", j.StalePausedAfter.D(), 10 * time.Second, 24 * time.Hour},
 		{"jellyfin.remove_disconnected_after", j.RemoveDisconnectedAfter.D(), 5 * time.Second, 24 * time.Hour},
 		{"jellyfin.queue_jump_step_delay", j.QueueJumpStepDelay.D(), 0, 2 * time.Second},
+		{"jellyfin.remove_missing_after", j.RemoveMissingAfter.D(), 0, 5 * time.Minute},
 		{"commands.timeout", c.Commands.Timeout.D(), 100 * time.Millisecond, time.Minute},
 		{"commands.verify_timeout", c.Commands.VerifyTimeout.D(), 0, time.Minute},
 		{"commands.remote_verify_timeout", c.Commands.RemoteVerifyTimeout.D(), 0, time.Minute},

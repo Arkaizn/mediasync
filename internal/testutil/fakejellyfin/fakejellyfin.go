@@ -72,6 +72,10 @@ type Client struct {
 	// track (paused at 0:00 while the new one loads), so the server never
 	// learns about the new track.
 	StaleTrackReports bool
+	// Hidden leaves the session out of GET /Sessions while the server still
+	// knows it (Finamp's session drops out for a poll during some remote
+	// commands; commands to it are still accepted).
+	Hidden bool
 	// Shuffled is the client's shuffle mode (PlayState.PlaybackOrder).
 	Shuffled bool
 	// Playing is the item the client really plays (differs from ItemID with
@@ -518,6 +522,9 @@ func (s *Server) sessionsJSON() []map[string]any {
 	defer s.mu.Unlock()
 	out := []map[string]any{}
 	for _, c := range s.clients {
+		if c.Hidden {
+			continue // missing from the list for now (still known to the server)
+		}
 		s.syncPos(c)
 		// Like the real server, announced commands are listed even when the
 		// client has no control connection (SupportsRemoteControl false).

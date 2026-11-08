@@ -63,6 +63,11 @@ type Config struct {
 	// RemoveDisconnectedAfter removes sessions after the server has been
 	// unreachable for this long.
 	RemoveDisconnectedAfter time.Duration
+	// RemoveMissingAfter removes a session only after it has been missing
+	// from GET /Sessions for this long (Finamp's session drops out for a
+	// poll during some remote commands). Until then it stays as it was.
+	// 0 removes it at the first poll it is missing from.
+	RemoveMissingAfter time.Duration
 	// MaxBackoff bounds the retry interval while the server is unreachable.
 	MaxBackoff time.Duration
 	// JumpMaxSteps: a forward queue_jump of up to this many tracks is sent
@@ -135,6 +140,11 @@ type Provider struct {
 	// has not reported anything new.
 	contexts map[string]*queueContext
 	jumps    map[string]*stepJump
+	// missingSince: published sessions absent from the latest polls, and
+	// since when (see Config.RemoveMissingAfter). firstPoll is when the
+	// first successful poll happened (restored contexts get the same grace).
+	missingSince map[string]time.Time
+	firstPoll    time.Time
 	// persistMu orders saves; lastSaved is the last state handed to SaveState.
 	persistMu sync.Mutex
 	lastSaved string
@@ -165,17 +175,18 @@ func New(cfg Config, log *slog.Logger) (*Provider, error) {
 		log = slog.Default()
 	}
 	p := &Provider{
-		cfg:       cfg,
-		log:       log.With("provider", Kind, "server", cfg.Name),
-		client:    client,
-		now:       time.Now,
-		refresh:   make(chan struct{}, 1),
-		reauth:    make(chan struct{}, 1),
-		live:      map[string]SessionInfo{},
-		published: map[string]model.Session{},
-		contexts:  map[string]*queueContext{},
-		jumps:     map[string]*stepJump{},
-		state:     model.ProviderStarting,
+		cfg:          cfg,
+		log:          log.With("provider", Kind, "server", cfg.Name),
+		client:       client,
+		now:          time.Now,
+		refresh:      make(chan struct{}, 1),
+		reauth:       make(chan struct{}, 1),
+		live:         map[string]SessionInfo{},
+		published:    map[string]model.Session{},
+		contexts:     map[string]*queueContext{},
+		missingSince: map[string]time.Time{},
+		jumps:        map[string]*stepJump{},
+		state:        model.ProviderStarting,
 	}
 	p.restoreContexts(cfg.SavedState)
 	return p, nil
@@ -468,23 +479,43 @@ func (p *Provider) poll(ctx context.Context) error {
 		p.published[s.ID] = s
 		upserts = append(upserts, s)
 	}
+	if p.firstPoll.IsZero() {
+		p.firstPoll = now
+	}
 	var removals []string
 	for id := range p.published {
-		if !seen[id] {
-			removals = append(removals, id)
-			delete(p.published, id)
-			delete(p.live, id)
-			delete(p.contexts, id)
-			delete(p.jumps, id)
-		}
-	}
-	if p.pollCount == 1 {
-		// Contexts restored from the state file whose session is gone.
-		for id, c := range p.contexts {
-			if !seen[id] {
-				p.log.Info("queue context ended", "session", id, "context", c.Name, "context_id", c.ID, "reason", "session gone after restart")
-				delete(p.contexts, id)
+		if seen[id] {
+			if since, ok := p.missingSince[id]; ok {
+				p.log.Info("session back in poll", "session", id, "missing_for", now.Sub(since).Round(100*time.Millisecond).String())
+				delete(p.missingSince, id)
 			}
+			continue
+		}
+		since, ok := p.missingSince[id]
+		if !ok {
+			since = now
+			p.missingSince[id] = now
+			if p.cfg.RemoveMissingAfter > 0 {
+				p.log.Info("session missing from poll", "session", id, "client", p.live[id].Client, "device", p.live[id].DeviceName)
+			}
+		}
+		if now.Sub(since) < p.cfg.RemoveMissingAfter {
+			// Keep it as it was (published state, context, jump record):
+			// it usually comes back with the next poll.
+			continue
+		}
+		if p.cfg.RemoveMissingAfter > 0 {
+			p.log.Info("session removed after missing from polls", "session", id, "missing_for", now.Sub(since).Round(100*time.Millisecond).String())
+		}
+		removals = append(removals, id)
+		p.dropSessionLocked(id)
+	}
+	// Contexts restored from the state file whose session never showed up
+	// within the same grace.
+	for id, c := range p.contexts {
+		if _, published := p.published[id]; !published && !seen[id] && now.Sub(p.firstPoll) >= p.cfg.RemoveMissingAfter {
+			p.log.Info("queue context ended", "session", id, "context", c.Name, "context_id", c.ID, "reason", "session gone after restart")
+			delete(p.contexts, id)
 		}
 	}
 	p.state, p.message, p.lastErr = model.ProviderRunning, "", nil
@@ -501,6 +532,18 @@ func (p *Provider) poll(ctx context.Context) error {
 	}
 	p.persistContexts()
 	return nil
+}
+
+// dropSessionLocked forgets a removed session (p.mu held).
+func (p *Provider) dropSessionLocked(id string) {
+	if c := p.contexts[id]; c != nil {
+		p.log.Info("queue context ended", "session", id, "context", c.Name, "context_id", c.ID, "reason", "session gone")
+	}
+	delete(p.published, id)
+	delete(p.live, id)
+	delete(p.contexts, id)
+	delete(p.jumps, id)
+	delete(p.missingSince, id)
 }
 
 func (p *Provider) fetchSessions(ctx context.Context) ([]SessionInfo, time.Time, error) {
@@ -783,7 +826,9 @@ func (p *Provider) removeAll() {
 	for id := range p.published {
 		ids = append(ids, id)
 	}
-	p.published = map[string]model.Session{}
+	for _, id := range ids {
+		p.dropSessionLocked(id)
+	}
 	p.live = map[string]SessionInfo{}
 	sink := p.sink
 	p.mu.Unlock()
@@ -861,6 +906,13 @@ func (p *Provider) Command(ctx context.Context, sessionID string, cmd model.Comm
 		return model.Errorf(model.ErrUnsupported, "unknown command %q", cmd.Name)
 	}
 	if err != nil {
+		p.mu.Lock()
+		_, missing := p.missingSince[sessionID]
+		p.mu.Unlock()
+		if missing && model.CodeOf(err) == model.ErrSessionNotFound {
+			return model.Wrap(model.ErrSessionUnavailable, err,
+				"the Jellyfin session is missing from the server right now (it may come back within seconds)")
+		}
 		return err
 	}
 	p.persistContexts()
